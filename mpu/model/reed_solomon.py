@@ -59,8 +59,9 @@ def rs_generator_poly(nsym: int = two_t, B: int = first_consec_root) -> List[int
     g = [1]
     for i in range(nsym):
         root = exp[(log[alpha] * (B + i)) % 255]  # alpha^(B+i)
-        # (x - root) == (1, root) in coefficients [1, root]
-        g = gf_poly_mul(g, [1, root])
+        # (x - root) == (1, root) in coefficients [root, 1]
+        g = gf_poly_mul(g, [root, 1])
+
     return g
 
 _GEN = rs_generator_poly(two_t, first_consec_root)
@@ -81,7 +82,7 @@ def rs_encode_block_223(data: bytes, nsym: int = two_t) -> bytes:
             # parity ^= feedback * (g(x) without the leading 1), align degrees
             # g = [1, g1, g2, ..., g_ns]  -> apply to parity positions 0..nsym-1
             for i in range(nsym):
-                parity[i] ^= gf_mul(_GEN[i + 1], feedback)
+                parity[i] ^= gf_mul(_GEN[nsym - 1 - i], feedback)
     return data + bytes(parity)
 
 # convenience for streaming multiple blocks (exact multiples of 223)
@@ -102,17 +103,84 @@ def rs_syndromes(codeword: bytes, nsym: int = two_t, B: int = first_consec_root)
     for j in range(nsym):
         x = exp[(log[alpha] * (B + j)) % 255]  # alpha^{B+j}
         acc = 0
-        for c in codeword:
-            acc = gf_mul(acc, x) ^ c
+        # codeword[0] = x^(n-1), codeword[1] = x^(n-2), etc.
+        for i, c in enumerate(codeword):
+            if c != 0:
+                # c * x^(n-1-i)
+                power = ((n - 1 - i) * log[x]) % 255
+                acc ^= gf_mul(c, exp[power])
         S.append(acc)
     return S
 
 
+
 if __name__ == "__main__":
-    # 1. encode a single zero block (223 bytes of 0)
-    m = bytes([0] * k)
-    cw = rs_encode_block_223(m)
-    print(f"Codeword length = {len(cw)} (expect 255)")
-    # 2) check syndromes are all-zero for the produced codeword
-    S = rs_syndromes(cw)
-    print("All-zero syndromes? ", all(s == 0 for s in S))
+    import random
+    import reedsolo  # pip install reedsolo
+    random.seed(69)
+
+    RS = reedsolo.RSCodec(
+        two_t,                 # 32 parity bytes
+        nsize=255,             # codeword length
+        c_exp=8,               # GF(2^8)
+        generator=alpha,       # primitive element alpha = 0x02
+        fcr=first_consec_root, # first consecutive root = 1
+        prim=prim_poly,        # primitive polynomial 0x187
+    )
+    print("[info] reedsolo oracle configured (prim=0x%X, gen=%d, fcr=%d)" % (prim_poly, alpha, first_consec_root))
+
+    total = 0
+    bad = 0
+
+    def check_equal(name: str, want: bytes, got: bytes):
+        global total, bad
+        total += 1
+        if want != got:
+            bad += 1
+            first_bad = next((i for i,(a,b) in enumerate(zip(want,got)) if a!=b), None)
+            print(f"[FAIL] {name}: mismatch at byte {first_bad if first_bad is not None else 'n/a'}")
+        else:
+            print(f"[PASS] {name}")
+
+    # Edge patterns
+    edge_msgs = [
+        bytes([0]*k),
+        bytes([0xFF]*k),
+        bytes([i % 256 for i in range(k)]),
+        bytes([(255 - i) % 256 for i in range(k)]),
+        bytes([0xAA]*k),
+        bytes([0x55]*k),
+        bytes([0]*(k-1) + [1]),                   # one-hot at end
+        bytes([1] + [0]*(k-1)),                   # one-hot at start
+        bytes([0]*100 + [0xFF]*23 + [0]*(k-123)), # blocky structure
+        bytes([(i*37) & 0xFF for i in range(k)]), # LCG-ish
+    ]
+
+    # random pool (increase count if you want more hammering)
+    random_msgs = [bytes(random.randrange(256) for _ in range(k)) for __ in range(500)]
+
+    # 1. edge vectors
+    for idx, mblk in enumerate(edge_msgs, 1):
+        got = rs_encode_block_223(mblk)
+        ref = RS.encode(mblk)        # oracle
+        print(f"msg = {mblk.hex()}")
+        print(f"ref = {ref.hex()}")
+        print(f"got = {got.hex()}")
+        check_equal(f"EDGE#{idx}", ref, got)
+
+    # 2. random vectors
+    for rix, mblk in enumerate(random_msgs, 1):
+        got = rs_encode_block_223(mblk)
+        ref = RS.encode(mblk)        # oracle
+        print(f"msg = {mblk.hex()}")
+        print(f"ref = {ref.hex()}")
+        print(f"got = {got.hex()}")
+        check_equal(f"RAND#{rix}", ref, got)
+
+    # summary
+    print("\n=== SUMMARY ===")
+    print(f"Total oracle equality checks: {total}, mismatches: {bad}")
+    if bad == 0:
+        print("All codewords match the reedsolo oracle")
+    else:
+        print("Mismatches found")
