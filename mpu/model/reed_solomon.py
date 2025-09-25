@@ -1,5 +1,5 @@
 # mpu/model/reed_solomon.py
-# Minimal, dependency-free Reed–Solomon (255,223) encoder for GF(2^8)
+# Minimal Reed–Solomon (255,223) encoder for GF(2^8)
 # Field: p(x) = x^8 + x^7 + x^2 + x + 1  -> 0x187 (or 0x87 without the x^8 bit)
 # Systematic codeword: [data (223 bytes)] || [parity (32 bytes)]
 # Consecutive roots: alpha^(B+i), i=0..(2t-1) with B=1 (common choice)
