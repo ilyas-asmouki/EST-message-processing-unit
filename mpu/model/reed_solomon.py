@@ -29,12 +29,12 @@ def _gf_init():
         log[x] = i
         # multiply by primitive element (x -> x*2 in polynomial basis)
         x <<= 1
-        if x & 0x100:  # if degree 8 term appears, reduce by primitive polynomial
+        if x & (1 << m):  # if degree 8 term appears, reduce by primitive polynomial
             # reduce mod p(x): subtract (XOR) prim_poly
             x ^= prim_poly
     # duplicate
-    for i in range(255, 512):
-        exp[i] = exp[i - 255]
+    for i in range(2**m - 1, 2 * (2**m - 1)):
+        exp[i] = exp[i - (2**m - 1)]
 
 _gf_init()
 
@@ -58,7 +58,7 @@ def gf_poly_mul(p: List[int], q: List[int]) -> List[int]:
 def rs_generator_poly(nsym: int = two_t, B: int = first_consec_root) -> List[int]:
     g = [1]
     for i in range(nsym):
-        root = exp[(log[alpha] * (B + i)) % 255]  # alpha^(B+i)
+        root = exp[(log[alpha] * (B + i)) % (2**m - 1)]  # alpha^(B+i)
         # (x - root) == (1, root) in coefficients [root, 1]
         g = gf_poly_mul(g, [root, 1])
 
@@ -70,7 +70,7 @@ _GEN = rs_generator_poly(two_t, first_consec_root)
 # uses Linear Feedback Shift Register
 def rs_encode_block_223(data: bytes, nsym: int = two_t) -> bytes:
     if len(data) != k:
-        raise ValueError(f"RS(255,223) block must be {k} bytes, got {len(data)}")
+        raise ValueError(f"RS({n},{k}) block must be {k} bytes, got {len(data)}")
     # remainder register (parity), start at all zeros
     parity = [0] * nsym
     for b in data:
@@ -101,13 +101,13 @@ def rs_encode(data: bytes, block_bytes: int = k) -> bytes:
 def rs_syndromes(codeword: bytes, nsym: int = two_t, B: int = first_consec_root) -> List[int]:
     S = []
     for j in range(nsym):
-        x = exp[(log[alpha] * (B + j)) % 255]  # alpha^{B+j}
+        x = exp[(log[alpha] * (B + j)) % (2**m - 1)]  # alpha^{B+j}
         acc = 0
         # codeword[0] = x^(n-1), codeword[1] = x^(n-2), etc.
         for i, c in enumerate(codeword):
             if c != 0:
                 # c * x^(n-1-i)
-                power = ((n - 1 - i) * log[x]) % 255
+                power = ((n - 1 - i) * log[x]) % (2**m - 1)
                 acc ^= gf_mul(c, exp[power])
         S.append(acc)
     return S
@@ -121,8 +121,8 @@ if __name__ == "__main__":
 
     RS = reedsolo.RSCodec(
         two_t,                 # 32 parity bytes
-        nsize=255,             # codeword length
-        c_exp=8,               # GF(2^8)
+        nsize=n,               # codeword length
+        c_exp=m,               # GF(2^8)
         generator=alpha,       # primitive element alpha = 0x02
         fcr=first_consec_root, # first consecutive root = 1
         prim=prim_poly,        # primitive polynomial 0x187
