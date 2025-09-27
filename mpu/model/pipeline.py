@@ -20,6 +20,7 @@ from typing import Optional
 
 from mpu.model.reed_solomon import rs_encode, rs_syndromes, k as RS_K, n as RS_N
 from mpu.model.interleaver import interleave, deinterleave, CODEWORD_BYTES, POSSIBLE_DEPTHS
+from mpu.model.scrambler import scramble_bits, descramble_bits ,DEFAULT_SEED
 
 def _read_input(args: argparse.Namespace) -> bytes:
     if args.text is not None:
@@ -61,6 +62,10 @@ def main(argv: Optional[list] = None) -> int:
                    help=f"Interleaver depth I (default: 2)")
     p.add_argument("--pad", choices=["none", "zero"], default="zero",
                    help="Pad input to multiples of 223 bytes (default: zero).")
+    p.add_argument("--no-scramble", action="store_true",
+                   help="Disable scrambler (enabled by default).")
+    p.add_argument("--seed", type=lambda s: int(s, 0), default=DEFAULT_SEED,
+                   help="Override scrambler seed (int, e.g. 0b1011101).")
     p.add_argument("--out", help="Write pipeline output (binary) to this file.")
     p.add_argument("--print", dest="do_print", action="store_true",
                    help="Print space-separated bytes of pipeline output (default if no --out given).")
@@ -90,7 +95,8 @@ def main(argv: Optional[list] = None) -> int:
     if args.show:
         blocks = len(data_for_rs) // RS_K
         print(f"Input bytes: {len(data)} (after pad policy: {len(data_for_rs)})")
-        print(f"RS blocks: {blocks} (k={RS_K}, n={RS_N}), interleaver depth I={args.depth}")
+        print(f"RS blocks: {blocks} (k={RS_K}, n={RS_N}), interleaver depth I={args.depth}, "
+              f"scrambler={'OFF' if args.no_scramble else 'ON'}")
 
     # RS encode -> concatenated 255B codewords
     rs_out = rs_encode(data_for_rs)
@@ -108,10 +114,17 @@ def main(argv: Optional[list] = None) -> int:
     # Interleave per codeword with depth I
     interleaved = interleave(rs_out, args.depth)
 
+    # Scramble (enabled by default, disable with --no-scramble)
+    if args.no_scramble:
+        scrambled = interleaved
+    else:
+        scrambled = scramble_bits(interleaved, seed=args.seed)
+
     # Output
+    final_out = scrambled
     if args.out:
         with open(args.out, "wb") as f:
-            f.write(interleaved)
+            f.write(final_out)
 
     # Output stages
     if args.do_print:
@@ -127,14 +140,24 @@ def main(argv: Optional[list] = None) -> int:
         print(" ".join(str(b) for b in interleaved))
         print()
 
+        if not args.no_scramble:
+            print(f"scrambler output (poly=x^7+x^4+1, seed={args.seed:#09b}) =")
+            print(" ".join(str(b) for b in scrambled))
+            print()
+
+            # print(f"unscrambler output (poly=x^7+x^4+1, seed={args.seed:#09b}) =")
+            # print(" ".join(str(b) for b in descramble_bits(scrambled, seed=args.seed)))
+            # print()
+
+        
 
     if args.hexout:
-        print(interleaved.hex())
+        print(final_out.hex())
 
     # If neither print nor hexout nor out is given, show a tiny summary
     if not (args.out or args.do_print or args.hexout):
-        print(f"Pipeline OK. Output bytes: {len(interleaved)} "
-              f"({len(interleaved)//CODEWORD_BYTES} codewords). Use --out/--no-print/--hexout to control output.")
+        print(f"Pipeline OK. Output bytes: {len(final_out)} "
+              f"({len(final_out)//CODEWORD_BYTES} codewords). Use --out/--no-print/--hexout to control output.")
 
     return 0
 
