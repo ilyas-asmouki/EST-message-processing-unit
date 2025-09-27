@@ -21,6 +21,7 @@ from typing import Optional
 from mpu.model.reed_solomon import rs_encode, rs_syndromes, k as RS_K, n as RS_N
 from mpu.model.interleaver import interleave, deinterleave, CODEWORD_BYTES, POSSIBLE_DEPTHS
 from mpu.model.scrambler import scramble_bits, descramble_bits ,DEFAULT_SEED
+from mpu.model.conv_encoder import conv_encode
 
 def _read_input(args: argparse.Namespace) -> bytes:
     if args.text is not None:
@@ -120,28 +121,35 @@ def main(argv: Optional[list] = None) -> int:
     else:
         scrambled = scramble_bits(interleaved, seed=args.seed)
 
+    # Convolutional encoder
+    convolved = conv_encode(scrambled)
+
     # Output
-    final_out = scrambled
+    final_out = convolved
     if args.out:
         with open(args.out, "wb") as f:
             f.write(final_out)
 
     # Output stages
     if args.do_print:
-        print("input =")
+        size = len(data)
+        print(f"input (size = {size}) =")
         print(" ".join(str(b) for b in data))
         print()
 
-        print("RS output =")
+        size = len(rs_out)
+        print(f"RS output (size = {size}) =")
         print(" ".join(str(b) for b in rs_out))
         print()
 
-        print(f"interleaver output (I={args.depth}) =")
+        size = len(interleaved)
+        print(f"interleaver output (I={args.depth}) (size = {size}) =")
         print(" ".join(str(b) for b in interleaved))
         print()
 
         if not args.no_scramble:
-            print(f"scrambler output (poly=x^7+x^4+1, seed={args.seed:#09b}) =")
+            size = len(scrambled)
+            print(f"scrambler output (poly=x^7+x^4+1, seed={args.seed:#09b}) (size = {size}) =")
             print(" ".join(str(b) for b in scrambled))
             print()
 
@@ -149,6 +157,10 @@ def main(argv: Optional[list] = None) -> int:
             # print(" ".join(str(b) for b in descramble_bits(scrambled, seed=args.seed)))
             # print()
 
+        size = len(convolved)
+        print(f"convolutional encoder output (size = {size}) =")
+        print(" ".join(str(b) for b in convolved))
+        print()
         
 
     if args.hexout:
