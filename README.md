@@ -31,7 +31,7 @@ Before running any Python script in the `mpu/model/` directory, set up a virtual
 3. **Install dependencies**:
 
    ```bash
-   pip install reedsolo scikit-commpy
+   pip install reedsolo scikit-commpy numpy
    ```
 
 

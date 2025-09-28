@@ -87,21 +87,29 @@ def conv_encode_bytes_per_codeword(data: bytes, codeword_bytes: int = CODEWORD_B
     # treat 'data' as a concatenation of 255-byte codewords
     # for each 255B chunk:
     # - reset encoder state to zeros
-    # - encode all its bits
-    # - append 6 zero tail bits
-    # output is packed msb-first
+    # - encode all its bits (4092 bits)
+    # - pad **per block** with 4 zero bits to reach a byte boundary (4096 bits = 512 B)
+    # output is a concatenation of 512-byte encoded blocks
 
     if len(data) % codeword_bytes != 0:
         raise ValueError(f"Convolutional encoder expects multiples of {codeword_bytes} bytes, got {len(data)}.")
 
-    encoded_stream_bits: List[int] = []
+    out_bytes = bytearray()
 
     for off in range(0, len(data), codeword_bytes):
         block = data[off:off + codeword_bytes]
-        block_bits = _bits_from_bytes(block)  # 255 * 8 bits
-        encoded_stream_bits.extend(conv_encode_block_bits(block_bits))
+        block_bits = _bits_from_bytes(block)             # 255*8 = 2040
+        enc_bits   = conv_encode_block_bits(block_bits)  # 4092 bits (with 6 zero tails)
 
-    return _bytes_from_bits(encoded_stream_bits)
+        # pad **per block** to a byte boundary: add 4 zero bits → 4096 bits (512 bytes)
+        pad = (-len(enc_bits)) % 8
+        if pad:
+            enc_bits.extend([0] * pad)                   # pad = 4
+
+        out_bytes.extend(_bytes_from_bits(enc_bits))     # append exactly 512 bytes for this block
+
+    return bytes(out_bytes)
+
 
 
 def conv_encode(data: bytes) -> bytes:

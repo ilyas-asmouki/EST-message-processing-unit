@@ -161,7 +161,95 @@ def main(argv: Optional[list] = None) -> int:
         print(f"convolutional encoder output (size = {size}) =")
         print(" ".join(str(b) for b in convolved))
         print()
-        
+
+        # ===== Oracle reverse (Viterbi -> descrambler -> deinterleaver -> RS decode) =====
+        import numpy as np
+        from commpy.channelcoding.convcode import Trellis, viterbi_decode
+        import reedsolo
+
+        # --- helpers (bit packing) ---
+        def _bits_from_bytes(data: bytes) -> list[int]:
+            out = []
+            for b in data:
+                for i in range(8):
+                    out.append((b >> (7 - i)) & 1)
+            return out
+
+        def _bytes_from_bits(bits: list[int]) -> bytes:
+            out = bytearray()
+            acc = 0
+            n = 0
+            for bit in bits:
+                acc = (acc << 1) | (bit & 1)
+                n += 1
+                if n == 8:
+                    out.append(acc)
+                    acc = 0
+                    n = 0
+            if n:
+                out.append(acc << (8 - n))
+            return bytes(out)
+
+        # --- CC (171,133)o, L=7, terminated per 255B block ---
+        L = 7
+        G1_OCT = 0o171
+        G2_OCT = 0o133
+        DATA_BITS_PER_BLOCK = CODEWORD_BYTES * 8            # 255*8 = 2040
+        TAIL_BITS = L - 1                                   # 6
+        ENC_BITS_PER_BLOCK = 2 * (DATA_BITS_PER_BLOCK + TAIL_BITS)   # 4092
+        ENC_BYTES_PER_BLOCK = (ENC_BITS_PER_BLOCK + 7) // 8          # 512
+        PAD_BITS = ENC_BYTES_PER_BLOCK * 8 - ENC_BITS_PER_BLOCK      # 4
+
+        trellis = Trellis(np.array([L-1]), np.array([[G1_OCT, G2_OCT]], dtype=int))
+
+        # 1) slice encoded stream per block in BYTES, drop pad bits, then Viterbi (hard)
+        if len(convolved) % ENC_BYTES_PER_BLOCK != 0:
+            raise RuntimeError(f"Encoded byte stream length {len(convolved)} "
+                               f"not multiple of per-block {ENC_BYTES_PER_BLOCK} bytes.")
+        viterbi_out_bits: list[int] = []
+        for off in range(0, len(convolved), ENC_BYTES_PER_BLOCK):
+            blk_bytes = convolved[off:off + ENC_BYTES_PER_BLOCK]
+            bits_full = _bits_from_bytes(blk_bytes)               # 4096 bits
+            bits = bits_full[:ENC_BITS_PER_BLOCK]                 # drop 4 pad bits → 4092
+            dec = viterbi_decode(np.array(bits, dtype=float),
+                                 trellis,
+                                 tb_depth=5*(L-1),
+                                 decoding_type='hard')
+            # Keep only the 2040 data bits
+            viterbi_out_bits.extend(int(b) for b in dec[:DATA_BITS_PER_BLOCK])
+
+        viterbi_bytes = _bytes_from_bits(viterbi_out_bits)
+        print(f"viterbi decoder output (size = {len(viterbi_bytes)}) =")
+        print(" ".join(str(b) for b in viterbi_bytes))
+        print()
+
+        # 2) descrambler
+        descrambled = viterbi_bytes if args.no_scramble else descramble_bits(viterbi_bytes, seed=args.seed)
+        print(f"descrambler output (size = {len(descrambled)}) =")
+        print(" ".join(str(b) for b in descrambled))
+        print()
+
+        # 3) deinterleaver (per 255B block, depth I)
+        deintl = deinterleave(descrambled, args.depth)
+        print(f"deinterleaver output (I={args.depth}) (size = {len(deintl)}) =")
+        print(" ".join(str(b) for b in deintl))
+        print()
+
+        # 4) RS reverse via reedsolo oracle (RS(255,223), prim=0x187, alpha=2, fcr=1)
+        RS = reedsolo.RSCodec(32, nsize=255, c_exp=8, generator=2, fcr=1, prim=0x187)
+        if len(deintl) % CODEWORD_BYTES != 0:
+            raise RuntimeError(f"deinterleaver output {len(deintl)} not multiple of {CODEWORD_BYTES}")
+        restored = bytearray()
+        for off in range(0, len(deintl), CODEWORD_BYTES):
+            cw = deintl[off:off + CODEWORD_BYTES]
+            msg, _, _ = RS.decode(cw)  # decode returns (message, ecc, errata)
+            restored.extend(msg)
+
+        print(f"reverse RS output (size = {len(restored)}) =")
+        print(" ".join(str(b) for b in restored))
+        print()
+
+
 
     if args.hexout:
         print(final_out.hex())
