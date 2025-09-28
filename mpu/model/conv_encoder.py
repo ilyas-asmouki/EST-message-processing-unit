@@ -109,13 +109,50 @@ def conv_encode(data: bytes) -> bytes:
     # interleaved+scrambled codewords. per-codeword reset + 6 zero tails
     return conv_encode_bytes_per_codeword(data, CODEWORD_BYTES)
 
+
+
 if __name__ == "__main__":
-    import os
-    test = bytes(range(CODEWORD_BYTES))
-    out = conv_encode(test)
-    # for one block: input bits = 255*8 = 2040, plus 6 tail bits => 2046 input steps
-    # output bits = 2 * 2046 = 4092 -> bytes = ceil(4092/8) = 512 +  (4092-4096=-4) -> 512 bytes exactly? No, 4096 would be 512 bytes, 4092 is 511.5 -> 512 bytes after padding
-    expected_bits = 2 * ((CODEWORD_BYTES * 8) + M)
-    expected_bytes = (expected_bits + 7) // 8
-    assert len(out) == expected_bytes, f"Unexpected output length: {len(out)} vs {expected_bytes}"
-    print("conv_encoder.py: self-test OK")
+    from commpy.channelcoding.convcode import Trellis, conv_encode as commpy_conv_encode
+    import numpy as np
+    import random
+
+    def commpy_encode(data: bytes) -> bytes:
+        trellis = Trellis(np.array([L-1]), np.array([[G1_OCT, G2_OCT]], dtype=int))
+        out_bits = []
+        if len(data) % CODEWORD_BYTES != 0:
+            raise ValueError("Input must be multiples of 255 bytes")
+        for off in range(0, len(data), CODEWORD_BYTES):
+            block = data[off:off+CODEWORD_BYTES]
+            bits = np.array(_bits_from_bytes(block), dtype=int)
+            enc = commpy_conv_encode(bits, trellis, termination='term')
+            out_bits.extend(int(b) for b in enc.tolist())
+        return _bytes_from_bits(out_bits)
+
+    def compare(name: str, blk: bytes):
+        ours = conv_encode(blk)          # our implementation
+        ref  = commpy_encode(blk)        # oracle
+        ok   = (ours == ref)
+        status = "good" if ok else "bad"
+        print(f"[{name}] {status} (len={len(ours)})")
+        if not ok:
+            for i,(a,b) in enumerate(zip(ours, ref)):
+                if a != b:
+                    print(f"  first diff at byte {i}: ours={a}, ref={b}")
+                    break
+
+    random.seed(0xBEEF)
+
+    blk_zero = bytes([0]*CODEWORD_BYTES)
+    blk_ff   = bytes([0xFF]*CODEWORD_BYTES)
+    blk_imp  = bytes([0x80] + [0]*(CODEWORD_BYTES-1))
+    blk_rand = bytes(random.getrandbits(8) for _ in range(CODEWORD_BYTES))
+
+    compare("all zeros", blk_zero)
+    compare("all 0xFF",  blk_ff)
+    compare("impulse",   blk_imp)
+    for i in range(500):
+        blk_rand = bytes(random.getrandbits(8) for _ in range(CODEWORD_BYTES))
+        compare(f"random {i}", blk_rand)
+
+    big_block = blk_zero + blk_ff + blk_rand
+    compare("3-block mixed", big_block)

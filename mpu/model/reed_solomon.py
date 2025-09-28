@@ -122,73 +122,73 @@ def pad_to_k(data: bytes, block_bytes: int = k) -> bytes:
 
 
 
-# if __name__ == "__main__":
-#     import random
-#     import reedsolo  # pip install reedsolo
-#     random.seed(69)
+if __name__ == "__main__":
+    import random
+    import reedsolo  # pip install reedsolo
+    random.seed(69)
 
-#     RS = reedsolo.RSCodec(
-#         two_t,                 # 32 parity bytes
-#         nsize=n,               # codeword length
-#         c_exp=m,               # GF(2^8)
-#         generator=alpha,       # primitive element alpha = 0x02
-#         fcr=first_consec_root, # first consecutive root = 1
-#         prim=prim_poly,        # primitive polynomial 0x187
-#     )
-#     print("[info] reedsolo oracle configured (prim=0x%X, gen=%d, fcr=%d)" % (prim_poly, alpha, first_consec_root))
+    RS = reedsolo.RSCodec(
+        two_t,                 # 32 parity bytes
+        nsize=n,               # codeword length
+        c_exp=m,               # GF(2^8)
+        generator=alpha,       # primitive element alpha = 0x02
+        fcr=first_consec_root, # first consecutive root = 1
+        prim=prim_poly,        # primitive polynomial 0x187
+    )
+    print("[info] reedsolo oracle configured (prim=0x%X, gen=%d, fcr=%d)" % (prim_poly, alpha, first_consec_root))
 
-#     total = 0
-#     bad = 0
+    total = 0
+    bad = 0
 
-#     def check_equal(name: str, want: bytes, got: bytes):
-#         global total, bad
-#         total += 1
-#         if want != got:
-#             bad += 1
-#             first_bad = next((i for i,(a,b) in enumerate(zip(want,got)) if a!=b), None)
-#             print(f"[FAIL] {name}: mismatch at byte {first_bad if first_bad is not None else 'n/a'}")
-#         else:
-#             print(f"[PASS] {name}")
+    def check_equal(name: str, want: bytes, got: bytes):
+        global total, bad
+        total += 1
+        if want != got:
+            bad += 1
+            first_bad = next((i for i,(a,b) in enumerate(zip(want,got)) if a!=b), None)
+            print(f"[FAIL] {name}: mismatch at byte {first_bad if first_bad is not None else 'n/a'}")
+        else:
+            print(f"[PASS] {name}")
 
-#     # Edge patterns
-#     edge_msgs = [
-#         bytes([0]*k),
-#         bytes([0xFF]*k),
-#         bytes([i % 256 for i in range(k)]),
-#         bytes([(255 - i) % 256 for i in range(k)]),
-#         bytes([0xAA]*k),
-#         bytes([0x55]*k),
-#         bytes([0]*(k-1) + [1]),                   # one-hot at end
-#         bytes([1] + [0]*(k-1)),                   # one-hot at start
-#         bytes([0]*100 + [0xFF]*23 + [0]*(k-123)), # blocky structure
-#         bytes([(i*37) & 0xFF for i in range(k)]), # LCG-ish
-#     ]
+    # Edge patterns
+    edge_msgs = [
+        bytes([0]*k),
+        bytes([0xFF]*k),
+        bytes([i % 256 for i in range(k)]),
+        bytes([(255 - i) % 256 for i in range(k)]),
+        bytes([0xAA]*k),
+        bytes([0x55]*k),
+        bytes([0]*(k-1) + [1]),                   # one-hot at end
+        bytes([1] + [0]*(k-1)),                   # one-hot at start
+        bytes([0]*100 + [0xFF]*23 + [0]*(k-123)), # blocky structure
+        bytes([(i*37) & 0xFF for i in range(k)]), # LCG-ish
+    ]
 
-#     # random pool (increase count if you want more hammering)
-#     random_msgs = [bytes(random.randrange(256) for _ in range(k)) for __ in range(500)]
+    # random pool (increase count if you want more hammering)
+    random_msgs = [bytes(random.randrange(256) for _ in range(k)) for __ in range(500)]
 
-#     # 1. edge vectors
-#     for idx, mblk in enumerate(edge_msgs, 1):
-#         got = rs_encode_block_223(mblk)
-#         ref = RS.encode(mblk)        # oracle
-#         print(f"msg = {mblk.hex()}")
-#         print(f"ref = {ref.hex()}")
-#         print(f"got = {got.hex()}")
-#         check_equal(f"EDGE#{idx}", ref, got)
+    # 1. edge vectors
+    for idx, mblk in enumerate(edge_msgs, 1):
+        got = rs_encode_block_223(mblk)
+        ref = RS.encode(mblk)        # oracle
+        print(f"msg = {mblk.hex()}")
+        print(f"ref = {ref.hex()}")
+        print(f"got = {got.hex()}")
+        check_equal(f"EDGE#{idx}", ref, got)
 
-#     # 2. random vectors
-#     for rix, mblk in enumerate(random_msgs, 1):
-#         got = rs_encode_block_223(mblk)
-#         ref = RS.encode(mblk)        # oracle
-#         print(f"msg = {mblk.hex()}")
-#         print(f"ref = {ref.hex()}")
-#         print(f"got = {got.hex()}")
-#         check_equal(f"RAND#{rix}", ref, got)
+    # 2. random vectors
+    for rix, mblk in enumerate(random_msgs, 1):
+        got = rs_encode_block_223(mblk)
+        ref = RS.encode(mblk)        # oracle
+        print(f"msg = {mblk.hex()}")
+        print(f"ref = {ref.hex()}")
+        print(f"got = {got.hex()}")
+        check_equal(f"RAND#{rix}", ref, got)
 
-#     # summary
-#     print("\n=== SUMMARY ===")
-#     print(f"Total oracle equality checks: {total}, mismatches: {bad}")
-#     if bad == 0:
-#         print("All codewords match the reedsolo oracle")
-#     else:
-#         print("Mismatches found")
+    # summary
+    print("\n=== SUMMARY ===")
+    print(f"Total oracle equality checks: {total}, mismatches: {bad}")
+    if bad == 0:
+        print("All codewords match the reedsolo oracle")
+    else:
+        print("Mismatches found")
