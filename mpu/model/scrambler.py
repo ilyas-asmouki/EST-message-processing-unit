@@ -43,7 +43,7 @@ def scramble_bits(data: bytes, seed: int = DEFAULT_SEED, taps: Tuple[int,int] = 
     return _bytes_from_bits(out_bits)
 
 def descramble_bits(data: bytes, seed: int = DEFAULT_SEED, taps: Tuple[int,int] = DEFAULT_POLY_TAPS) -> bytes:
-    # Same as scrambling for this additive LFSR (self-inverse)
+    # same as scrambling for this additive LFSR (self-inverse) 
     return scramble_bits(data, seed, taps)
 
 

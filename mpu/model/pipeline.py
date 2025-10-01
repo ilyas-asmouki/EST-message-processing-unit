@@ -22,6 +22,7 @@ from mpu.model.reed_solomon import rs_encode, rs_syndromes, k as RS_K, n as RS_N
 from mpu.model.interleaver import interleave, deinterleave, CODEWORD_BYTES, POSSIBLE_DEPTHS
 from mpu.model.scrambler import scramble_bits, descramble_bits ,DEFAULT_SEED
 from mpu.model.conv_encoder import conv_encode
+from mpu.model.diff_encoder import diff_encode, diff_decode
 
 def _read_input(args: argparse.Namespace) -> bytes:
     if args.text is not None:
@@ -124,8 +125,11 @@ def main(argv: Optional[list] = None) -> int:
     # Convolutional encoder
     convolved = conv_encode(scrambled)
 
+    # Differential encoder
+    diff_encoded = diff_encode(convolved)
+
     # Output
-    final_out = convolved
+    final_out = diff_encoded
     if args.out:
         with open(args.out, "wb") as f:
             f.write(final_out)
@@ -134,35 +138,37 @@ def main(argv: Optional[list] = None) -> int:
     if args.do_print:
         size = len(data)
         print(f"input (size = {size}) =")
-        print(" ".join(str(b) for b in data))
+        print(" ".join(f"{b:02X}" for b in data))
         print()
 
         size = len(rs_out)
         print(f"RS output (size = {size}) =")
-        print(" ".join(str(b) for b in rs_out))
+        print(" ".join(f"{b:02X}" for b in rs_out))
         print()
 
         size = len(interleaved)
         print(f"interleaver output (I={args.depth}) (size = {size}) =")
-        print(" ".join(str(b) for b in interleaved))
+        print(" ".join(f"{b:02X}" for b in interleaved))
         print()
 
         if not args.no_scramble:
             size = len(scrambled)
             print(f"scrambler output (poly=x^7+x^4+1, seed={args.seed:#09b}) (size = {size}) =")
-            print(" ".join(str(b) for b in scrambled))
+            print(" ".join(f"{b:02X}" for b in scrambled))
             print()
 
-            # print(f"unscrambler output (poly=x^7+x^4+1, seed={args.seed:#09b}) =")
-            # print(" ".join(str(b) for b in descramble_bits(scrambled, seed=args.seed)))
-            # print()
 
         size = len(convolved)
         print(f"convolutional encoder output (size = {size}) =")
-        print(" ".join(str(b) for b in convolved))
+        print(" ".join(f"{b:02X}" for b in convolved))
         print()
 
-        # ===== Oracle reverse (Viterbi -> descrambler -> deinterleaver -> RS decode) =====
+        size = len(diff_encoded)
+        print(f"diff encoder output (size = {size}) =")
+        print(" ".join(f"{b:02X}" for b in diff_encoded))
+        print()
+
+        # ===== Oracle reverse (Diff decoder -> Viterbi -> descrambler -> deinterleaver -> RS decode) =====
         import numpy as np
         from commpy.channelcoding.convcode import Trellis, viterbi_decode
         import reedsolo
@@ -202,15 +208,18 @@ def main(argv: Optional[list] = None) -> int:
 
         trellis = Trellis(np.array([L-1]), np.array([[G1_OCT, G2_OCT]], dtype=int))
 
+        # 0) differential decode first (undo bit encoding)
+        de_diff = diff_decode(diff_encoded)
+
         # 1) slice encoded stream per block in BYTES, drop pad bits, then Viterbi (hard)
-        if len(convolved) % ENC_BYTES_PER_BLOCK != 0:
-            raise RuntimeError(f"Encoded byte stream length {len(convolved)} "
+        if len(de_diff) % ENC_BYTES_PER_BLOCK != 0:
+            raise RuntimeError(f"Encoded byte stream length {len(de_diff)} "
                                f"not multiple of per-block {ENC_BYTES_PER_BLOCK} bytes.")
         viterbi_out_bits: list[int] = []
-        for off in range(0, len(convolved), ENC_BYTES_PER_BLOCK):
-            blk_bytes = convolved[off:off + ENC_BYTES_PER_BLOCK]
+        for off in range(0, len(de_diff), ENC_BYTES_PER_BLOCK):
+            blk_bytes = de_diff[off:off + ENC_BYTES_PER_BLOCK]
             bits_full = _bits_from_bytes(blk_bytes)               # 4096 bits
-            bits = bits_full[:ENC_BITS_PER_BLOCK]                 # drop 4 pad bits → 4092
+            bits = bits_full[:ENC_BITS_PER_BLOCK]                 # drop 4 pad bits -> 4092
             dec = viterbi_decode(np.array(bits, dtype=float),
                                  trellis,
                                  tb_depth=5*(L-1),
@@ -220,19 +229,19 @@ def main(argv: Optional[list] = None) -> int:
 
         viterbi_bytes = _bytes_from_bits(viterbi_out_bits)
         print(f"viterbi decoder output (size = {len(viterbi_bytes)}) =")
-        print(" ".join(str(b) for b in viterbi_bytes))
+        print(" ".join(f"{b:02X}" for b in viterbi_bytes))
         print()
 
         # 2) descrambler
         descrambled = viterbi_bytes if args.no_scramble else descramble_bits(viterbi_bytes, seed=args.seed)
         print(f"descrambler output (size = {len(descrambled)}) =")
-        print(" ".join(str(b) for b in descrambled))
+        print(" ".join(f"{b:02X}" for b in descrambled))
         print()
 
         # 3) deinterleaver (per 255B block, depth I)
         deintl = deinterleave(descrambled, args.depth)
         print(f"deinterleaver output (I={args.depth}) (size = {len(deintl)}) =")
-        print(" ".join(str(b) for b in deintl))
+        print(" ".join(f"{b:02X}" for b in deintl))
         print()
 
         # 4) RS reverse via reedsolo oracle (RS(255,223), prim=0x187, alpha=2, fcr=1)
@@ -246,9 +255,11 @@ def main(argv: Optional[list] = None) -> int:
             restored.extend(msg)
 
         print(f"reverse RS output (size = {len(restored)}) =")
-        print(" ".join(str(b) for b in restored))
+        print(" ".join(f"{b:02X}" for b in restored))
         print()
 
+        print(f"restored ascii = '{restored.decode('utf-8').replace("\x00", "\\x00")}'")
+        # print(f"restored ascii = '{restored.decode('utf-8')}'")
 
 
     if args.hexout:
