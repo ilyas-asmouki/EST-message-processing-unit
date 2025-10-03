@@ -23,6 +23,8 @@ from mpu.model.interleaver import interleave, deinterleave, CODEWORD_BYTES, POSS
 from mpu.model.scrambler import scramble_bits, descramble_bits ,DEFAULT_SEED
 from mpu.model.conv_encoder import conv_encode
 from mpu.model.diff_encoder import diff_encode, diff_decode
+from mpu.model.qpsk import qpsk_modulate_bytes_fixed, qpsk_demod_hard_fixed, pack_iq_le_bytes, FRAC_BITS_DEFAULT
+
 
 def _read_input(args: argparse.Namespace) -> bytes:
     if args.text is not None:
@@ -80,6 +82,15 @@ def main(argv: Optional[list] = None) -> int:
                    help="After RS encode, verify each 255B codeword has zero syndromes.")
     p.add_argument("--show", action="store_true",
                    help="Show brief sizes & block counts.")
+    p.add_argument("--qpsk-fixed", action="store_true",
+                   help="After diff encode, QPSK modulate to int16 I/Q (Q1.frac), then include hard-demod in reverse checks.")
+    p.set_defaults(qpsk_fixed=True)
+    p.add_argument("--frac-bits", type=int, default=FRAC_BITS_DEFAULT,
+                   help="Fractional bits for Q1.frac fixed-point QPSK (default: 15).")
+    p.add_argument("--iq-out", help="If --qpsk-fixed, write interleaved int16 LE [I0,Q0,I1,Q1,...] to this file.")
+    p.add_argument("--iq-print", type=int, default=0,
+                   help="If --qpsk-fixed, print first N I/Q pairs as integers.")
+
     args = p.parse_args(argv)
 
     data = _read_input(args)
@@ -128,8 +139,42 @@ def main(argv: Optional[list] = None) -> int:
     # Differential encoder
     diff_encoded = diff_encode(convolved)
 
+    # QPSK
+    iq = None  # will hold np.int16 interleaved I/Q if QPSK is active
+    qpsk_i = None  # separate I stream
+    qpsk_q = None  # separate Q stream
+    if args.qpsk_fixed:
+        iq = qpsk_modulate_bytes_fixed(diff_encoded, frac_bits=args.frac_bits, interleaved=True)  # np.int16 [I0,Q0,...]
+        # Extract separate I and Q streams
+        qpsk_i = iq[0::2]  # I samples: [I0, I1, I2, ...]
+        qpsk_q = iq[1::2]  # Q samples: [Q0, Q1, Q2, ...]
+        final_out = pack_iq_le_bytes(iq)  # little-endian int16 stream for DAC/file
+
+        if args.iq_print > 0:
+            N = min(args.iq_print, iq.size // 2)
+            print(f"qpsk int16 (Q1.{args.frac_bits}) first {N} I/Q pairs:")
+            for k in range(N):
+                ii = int(iq[2*k]); qq = int(iq[2*k+1])
+                print(f"{k:04d}: I={ii:+6d}  Q={qq:+6d}")
+            print()
+
+        if args.iq_out:
+            with open(args.iq_out, "wb") as f:
+                f.write(final_out)
+
+        if args.show:
+            sym_count = iq.size // 2
+            print(f"QPSK symbols: {sym_count} (int16 Q1.{args.frac_bits}, interleaved I/Q)")
+
+    else:
+        final_out = diff_encoded
+
+
     # Output
-    final_out = diff_encoded
+    if not args.qpsk_fixed:
+        final_out = diff_encoded  # bytes
+    # if QPSK is enabled, final_out was already set to packed LE int16 IQ
+
     if args.out:
         with open(args.out, "wb") as f:
             f.write(final_out)
@@ -168,7 +213,18 @@ def main(argv: Optional[list] = None) -> int:
         print(" ".join(f"{b:02X}" for b in diff_encoded))
         print()
 
-        # ===== Oracle reverse (Diff decoder -> Viterbi -> descrambler -> deinterleaver -> RS decode) =====
+        # Display separate I and Q streams if QPSK is enabled
+        if args.qpsk_fixed and qpsk_i is not None and qpsk_q is not None:
+            print(f"qpsk i (size = {len(qpsk_i)}) =")
+            print(" ".join(f"{int(i):+6d}" for i in (qpsk_i/23170)))
+            print()
+            
+            print(f"qpsk q (size = {len(qpsk_q)}) =")
+            print(" ".join(f"{int(q):+6d}" for q in qpsk_q/23170))
+            print()
+
+        # ===== Oracle reverse (QPSK hard demod if used -> Diff decoder -> Viterbi -> descrambler -> deinterleaver -> RS decode) =====
+        # We can run this in both modes. If QPSK was active, start from the hard-demodulated bytes.
         import numpy as np
         from commpy.channelcoding.convcode import Trellis, viterbi_decode
         import reedsolo
@@ -208,22 +264,31 @@ def main(argv: Optional[list] = None) -> int:
 
         trellis = Trellis(np.array([L-1]), np.array([[G1_OCT, G2_OCT]], dtype=int))
 
-        # 0) differential decode first (undo bit encoding)
-        de_diff = diff_decode(diff_encoded)
+        # 0) If QPSK was used, hard-demod the IQ back to diff-encoded bytes
+        if iq is not None:
+            diff_encoded_recovered = qpsk_demod_hard_fixed(iq, interleaved=True)
+            print(f"qpsk hard demod output (size = {len(diff_encoded_recovered)}) =")
+            print(" ".join(f"{b:02X}" for b in diff_encoded_recovered))
+            print()
+            start_bytes = diff_encoded_recovered
+        else:
+            start_bytes = diff_encoded
 
-        # 1) slice encoded stream per block in BYTES, drop pad bits, then Viterbi (hard)
+        # 1) differential decode
+        de_diff = diff_decode(start_bytes)
+
+        # 2) slice encoded stream per block in BYTES, drop pad bits, then Viterbi (hard)
         if len(de_diff) % ENC_BYTES_PER_BLOCK != 0:
-            raise RuntimeError(f"Encoded byte stream length {len(de_diff)} "
-                               f"not multiple of per-block {ENC_BYTES_PER_BLOCK} bytes.")
+            raise RuntimeError(f"Encoded byte stream length {len(de_diff)} not multiple of per-block {ENC_BYTES_PER_BLOCK} bytes.")
         viterbi_out_bits: list[int] = []
         for off in range(0, len(de_diff), ENC_BYTES_PER_BLOCK):
             blk_bytes = de_diff[off:off + ENC_BYTES_PER_BLOCK]
             bits_full = _bits_from_bytes(blk_bytes)               # 4096 bits
             bits = bits_full[:ENC_BITS_PER_BLOCK]                 # drop 4 pad bits -> 4092
             dec = viterbi_decode(np.array(bits, dtype=float),
-                                 trellis,
-                                 tb_depth=5*(L-1),
-                                 decoding_type='hard')
+                                trellis,
+                                tb_depth=5*(L-1),
+                                decoding_type='hard')
             # Keep only the 2040 data bits
             viterbi_out_bits.extend(int(b) for b in dec[:DATA_BITS_PER_BLOCK])
 
@@ -232,19 +297,20 @@ def main(argv: Optional[list] = None) -> int:
         print(" ".join(f"{b:02X}" for b in viterbi_bytes))
         print()
 
-        # 2) descrambler
+        # 3) descrambler
         descrambled = viterbi_bytes if args.no_scramble else descramble_bits(viterbi_bytes, seed=args.seed)
         print(f"descrambler output (size = {len(descrambled)}) =")
         print(" ".join(f"{b:02X}" for b in descrambled))
+
         print()
 
-        # 3) deinterleaver (per 255B block, depth I)
+        # 4) deinterleaver (per 255B block, depth I)
         deintl = deinterleave(descrambled, args.depth)
         print(f"deinterleaver output (I={args.depth}) (size = {len(deintl)}) =")
         print(" ".join(f"{b:02X}" for b in deintl))
         print()
 
-        # 4) RS reverse via reedsolo oracle (RS(255,223), prim=0x187, alpha=2, fcr=1)
+        # 5) RS reverse via reedsolo oracle (RS(255,223), prim=0x187, alpha=2, fcr=1)
         RS = reedsolo.RSCodec(32, nsize=255, c_exp=8, generator=2, fcr=1, prim=0x187)
         if len(deintl) % CODEWORD_BYTES != 0:
             raise RuntimeError(f"deinterleaver output {len(deintl)} not multiple of {CODEWORD_BYTES}")
@@ -257,12 +323,9 @@ def main(argv: Optional[list] = None) -> int:
         print(f"reverse RS output (size = {len(restored)}) =")
         print(" ".join(f"{b:02X}" for b in restored))
         print()
-
         print(f"restored ascii = '{restored.decode('utf-8').replace("\x00", "\\x00")}'")
-        # print(f"restored ascii = '{restored.decode('utf-8')}'")
 
-
-    if args.hexout:
+    if args.hexout and not args.qpsk_fixed:
         print(final_out.hex())
 
     # If neither print nor hexout nor out is given, show a tiny summary
