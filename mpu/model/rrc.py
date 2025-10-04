@@ -59,6 +59,12 @@ def generate_rrc_coefficients(
 RRC_COEFFS = generate_rrc_coefficients(SAMPLES_PER_SYMBOL, FILTER_SPAN, ROLL_OFF)
 
 
+def upsample(signal: np.ndarray, factor: int) -> np.ndarray:
+    upsampled = np.zeros(len(signal) * factor, dtype=signal.dtype)
+    upsampled[::factor] = signal
+    return upsampled
+
+
 # fir filtering implementation
 def fir_filter(signal: np.ndarray, coeffs: np.ndarray) -> np.ndarray:
     # explicit implementation suitable for fpga translation

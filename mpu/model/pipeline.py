@@ -17,6 +17,7 @@
 import argparse
 import sys
 from typing import Optional
+import numpy as np
 
 from mpu.model.reed_solomon import rs_encode, rs_syndromes, k as RS_K, n as RS_N
 from mpu.model.interleaver import interleave, deinterleave, CODEWORD_BYTES, POSSIBLE_DEPTHS
@@ -24,6 +25,7 @@ from mpu.model.scrambler import scramble_bits, descramble_bits ,DEFAULT_SEED
 from mpu.model.conv_encoder import conv_encode
 from mpu.model.diff_encoder import diff_encode, diff_decode
 from mpu.model.qpsk import qpsk_modulate_bytes_fixed, qpsk_demod_hard_fixed, pack_iq_le_bytes, FRAC_BITS_DEFAULT
+from mpu.model.rrc import rrc_filter, upsample, SAMPLES_PER_SYMBOL, FILTER_SPAN, ROLL_OFF
 
 
 def _read_input(args: argparse.Namespace) -> bytes:
@@ -72,9 +74,9 @@ def main(argv: Optional[list] = None) -> int:
                    help="Override scrambler seed (int, e.g. 0b1011101).")
     p.add_argument("--out", help="Write pipeline output (binary) to this file.")
     p.add_argument("--print", dest="do_print", action="store_true",
-                   help="Print space-separated bytes of pipeline output (default if no --out given).")
+                   help="Print space-separated bytes of pipeline output.")
     p.add_argument("--no-print", dest="do_print", action="store_false",
-                   help="Suppress printing even if no --out is given.")
+                   help="Suppress printing.")
     p.set_defaults(do_print=True)
     p.add_argument("--hexout", action="store_true",
                    help="Print hex of pipeline output.")
@@ -87,6 +89,11 @@ def main(argv: Optional[list] = None) -> int:
     p.set_defaults(qpsk_fixed=True)
     p.add_argument("--frac-bits", type=int, default=FRAC_BITS_DEFAULT,
                    help="Fractional bits for Q1.frac fixed-point QPSK (default: 15).")
+    p.add_argument("--rrc", action="store_true",
+                   help="Apply Root Raised Cosine pulse shaping after QPSK (with upsampling).")
+    p.add_argument("--no-rrc", dest="rrc", action="store_false",
+                   help="Disable RRC pulse shaping.")
+    p.set_defaults(rrc=True)
     p.add_argument("--iq-out", help="If --qpsk-fixed, write interleaved int16 LE [I0,Q0,I1,Q1,...] to this file.")
     p.add_argument("--iq-print", type=int, default=0,
                    help="If --qpsk-fixed, print first N I/Q pairs as integers.")
@@ -110,12 +117,14 @@ def main(argv: Optional[list] = None) -> int:
         print(f"Input bytes: {len(data)} (after pad policy: {len(data_for_rs)})")
         print(f"RS blocks: {blocks} (k={RS_K}, n={RS_N}), interleaver depth I={args.depth}, "
               f"scrambler={'OFF' if args.no_scramble else 'ON'}")
+        if args.rrc:
+            print(f"RRC: samples/symbol={SAMPLES_PER_SYMBOL}, span={FILTER_SPAN}, β={ROLL_OFF}")
 
     # RS encode -> concatenated 255B codewords
     rs_out = rs_encode(data_for_rs)
 
     if args.check:
-        # Check each codeword’s syndromes are all zero
+        # Check each codeword's syndromes are all zero
         for idx, cw in enumerate(_chunk(rs_out, CODEWORD_BYTES)):
             S = rs_syndromes(cw)
             if any(S):
@@ -139,16 +148,48 @@ def main(argv: Optional[list] = None) -> int:
     # Differential encoder
     diff_encoded = diff_encode(convolved)
 
-    # QPSK
+    # QPSK + RRC
     iq = None  # will hold np.int16 interleaved I/Q if QPSK is active
     qpsk_i = None  # separate I stream
     qpsk_q = None  # separate Q stream
+    qpsk_i_rrc = None  # RRC filtered I stream (if RRC enabled)
+    qpsk_q_rrc = None  # RRC filtered Q stream (if RRC enabled)
+    
     if args.qpsk_fixed:
         iq = qpsk_modulate_bytes_fixed(diff_encoded, frac_bits=args.frac_bits, interleaved=True)  # np.int16 [I0,Q0,...]
         # Extract separate I and Q streams
         qpsk_i = iq[0::2]  # I samples: [I0, I1, I2, ...]
         qpsk_q = iq[1::2]  # Q samples: [Q0, Q1, Q2, ...]
-        final_out = pack_iq_le_bytes(iq)  # little-endian int16 stream for DAC/file
+        
+        # Apply RRC pulse shaping if enabled
+        if args.rrc:
+            # Convert int16 to float for filtering
+            qpsk_i_float = qpsk_i.astype(np.float64)
+            qpsk_q_float = qpsk_q.astype(np.float64)
+            
+            # Upsample by SAMPLES_PER_SYMBOL (insert zeros)
+            qpsk_i_up = upsample(qpsk_i_float, SAMPLES_PER_SYMBOL)
+            qpsk_q_up = upsample(qpsk_q_float, SAMPLES_PER_SYMBOL)
+            
+            # Apply RRC filter
+            qpsk_i_filtered, qpsk_q_filtered = rrc_filter(qpsk_i_up, qpsk_q_up)
+            
+            # Store for display
+            qpsk_i_rrc = qpsk_i_filtered
+            qpsk_q_rrc = qpsk_q_filtered
+            
+            # Convert back to int16 (with saturation)
+            qpsk_i_int = np.clip(qpsk_i_filtered, -32768, 32767).astype(np.int16)
+            qpsk_q_int = np.clip(qpsk_q_filtered, -32768, 32767).astype(np.int16)
+            
+            # Re-interleave for output
+            iq_rrc = np.empty(len(qpsk_i_int) + len(qpsk_q_int), dtype=np.int16)
+            iq_rrc[0::2] = qpsk_i_int
+            iq_rrc[1::2] = qpsk_q_int
+            
+            final_out = pack_iq_le_bytes(iq_rrc)  # little-endian int16 stream for DAC/file
+        else:
+            final_out = pack_iq_le_bytes(iq)  # little-endian int16 stream for DAC/file
 
         if args.iq_print > 0:
             N = min(args.iq_print, iq.size // 2)
@@ -165,16 +206,14 @@ def main(argv: Optional[list] = None) -> int:
         if args.show:
             sym_count = iq.size // 2
             print(f"QPSK symbols: {sym_count} (int16 Q1.{args.frac_bits}, interleaved I/Q)")
+            if args.rrc:
+                rrc_samples = len(qpsk_i_rrc)
+                print(f"RRC output: {rrc_samples} samples ({rrc_samples // SAMPLES_PER_SYMBOL} symbols × {SAMPLES_PER_SYMBOL} sps)")
 
     else:
         final_out = diff_encoded
 
-
     # Output
-    if not args.qpsk_fixed:
-        final_out = diff_encoded  # bytes
-    # if QPSK is enabled, final_out was already set to packed LE int16 IQ
-
     if args.out:
         with open(args.out, "wb") as f:
             f.write(final_out)
@@ -202,7 +241,6 @@ def main(argv: Optional[list] = None) -> int:
             print(" ".join(f"{b:02X}" for b in scrambled))
             print()
 
-
         size = len(convolved)
         print(f"convolutional encoder output (size = {size}) =")
         print(" ".join(f"{b:02X}" for b in convolved))
@@ -216,16 +254,50 @@ def main(argv: Optional[list] = None) -> int:
         # Display separate I and Q streams if QPSK is enabled
         if args.qpsk_fixed and qpsk_i is not None and qpsk_q is not None:
             print(f"qpsk i (size = {len(qpsk_i)}) =")
-            print(" ".join(f"{int(i):+6d}" for i in (qpsk_i/23170)))
+            print(" ".join(f"{int(i):+6d}" for i in (qpsk_i[:20]/23170)))
+            if len(qpsk_i) > 20:
+                print("  ...")
             print()
             
             print(f"qpsk q (size = {len(qpsk_q)}) =")
-            print(" ".join(f"{int(q):+6d}" for q in qpsk_q/23170))
+            print(" ".join(f"{int(q):+6d}" for q in (qpsk_q[:20]/23170)))
+            if len(qpsk_q) > 20:
+                print("  ...")
             print()
+        
+        # Display RRC filter info and filtered output if enabled
+        if args.rrc:
+            from mpu.model.rrc import RRC_COEFFS
+            
+            print(f"=== RRC Filter ===")
+            print(f"Filter parameters: {SAMPLES_PER_SYMBOL} samples/symbol, span={FILTER_SPAN}, β={ROLL_OFF}")
+            print(f"Number of taps: {len(RRC_COEFFS)}")
+            print(f"Filter coefficients (first 10 and last 10 of {len(RRC_COEFFS)}):")
+            print(" ".join(f"{c:+.6f}" for c in RRC_COEFFS[:10]))
+            print("  ...")
+            print(" ".join(f"{c:+.6f}" for c in RRC_COEFFS[-10:]))
+            print()
+            
+            if qpsk_i_rrc is not None and qpsk_q_rrc is not None:
+                print(f"rrc i (after upsampling and filtering) (size = {len(qpsk_i_rrc)}) =")
+                # Show first 40 samples (5 symbols worth at 8 sps)
+                display_samples = min(40, len(qpsk_i_rrc))
+                print(" ".join(f"{int(i):+6d}" for i in (qpsk_i_rrc[:display_samples]/23170)))
+                if len(qpsk_i_rrc) > display_samples:
+                    print("  ...")
+                print()
+                
+                print(f"rrc q (after upsampling and filtering) (size = {len(qpsk_q_rrc)}) =")
+                print(" ".join(f"{int(q):+6d}" for q in (qpsk_q_rrc[:display_samples]/23170)))
+                if len(qpsk_q_rrc) > display_samples:
+                    print("  ...")
+                print()
+        
+        print("=== Reverse Path (Decoding) ===")
+        print()
 
         # ===== Oracle reverse (QPSK hard demod if used -> Diff decoder -> Viterbi -> descrambler -> deinterleaver -> RS decode) =====
         # We can run this in both modes. If QPSK was active, start from the hard-demodulated bytes.
-        import numpy as np
         from commpy.channelcoding.convcode import Trellis, viterbi_decode
         import reedsolo
 
@@ -265,12 +337,19 @@ def main(argv: Optional[list] = None) -> int:
         trellis = Trellis(np.array([L-1]), np.array([[G1_OCT, G2_OCT]], dtype=int))
 
         # 0) If QPSK was used, hard-demod the IQ back to diff-encoded bytes
-        if iq is not None:
+        # Note: If RRC was used, we skip the reverse path for now since we'd need
+        # matched filtering and downsampling (receiver-side processing)
+        if iq is not None and not args.rrc:
+            # Only do reverse path if no RRC (receiver processing not implemented yet)
             diff_encoded_recovered = qpsk_demod_hard_fixed(iq, interleaved=True)
             print(f"qpsk hard demod output (size = {len(diff_encoded_recovered)}) =")
             print(" ".join(f"{b:02X}" for b in diff_encoded_recovered))
             print()
             start_bytes = diff_encoded_recovered
+        elif args.rrc:
+            print("[info] Skipping reverse path - RRC receiver processing not implemented")
+            print()
+            return 0
         else:
             start_bytes = diff_encoded
 
@@ -323,7 +402,7 @@ def main(argv: Optional[list] = None) -> int:
         print(f"reverse RS output (size = {len(restored)}) =")
         print(" ".join(f"{b:02X}" for b in restored))
         print()
-        print(f"restored ascii = '{restored.decode('utf-8').replace("\x00", "\\x00")}'")
+        print(f"restored ascii = '{restored.decode('utf-8', errors='replace').replace(chr(0), '\\x00')}'")
 
     if args.hexout and not args.qpsk_fixed:
         print(final_out.hex())
