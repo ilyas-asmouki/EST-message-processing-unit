@@ -25,7 +25,7 @@ from mpu.model.scrambler import scramble_bits, descramble_bits ,DEFAULT_SEED
 from mpu.model.conv_encoder import conv_encode
 from mpu.model.diff_encoder import diff_encode, diff_decode
 from mpu.model.qpsk import qpsk_modulate_bytes_fixed, qpsk_demod_hard_fixed, pack_iq_le_bytes, FRAC_BITS_DEFAULT
-from mpu.model.rrc import rrc_filter, upsample, SAMPLES_PER_SYMBOL, FILTER_SPAN, ROLL_OFF
+from mpu.model.rrc import rrc_filter, upsample, fir_filter, SAMPLES_PER_SYMBOL, FILTER_SPAN, ROLL_OFF, NUM_TAPS
 
 
 def _read_input(args: argparse.Namespace) -> bytes:
@@ -118,7 +118,7 @@ def main(argv: Optional[list] = None) -> int:
         print(f"RS blocks: {blocks} (k={RS_K}, n={RS_N}), interleaver depth I={args.depth}, "
               f"scrambler={'OFF' if args.no_scramble else 'ON'}")
         if args.rrc:
-            print(f"RRC: samples/symbol={SAMPLES_PER_SYMBOL}, span={FILTER_SPAN}, β={ROLL_OFF}")
+            print(f"RRC: samples/symbol={SAMPLES_PER_SYMBOL}, span={FILTER_SPAN}, beta={ROLL_OFF}")
 
     # RS encode -> concatenated 255B codewords
     rs_out = rs_encode(data_for_rs)
@@ -171,8 +171,17 @@ def main(argv: Optional[list] = None) -> int:
             qpsk_i_up = upsample(qpsk_i_float, SAMPLES_PER_SYMBOL)
             qpsk_q_up = upsample(qpsk_q_float, SAMPLES_PER_SYMBOL)
             
-            # Apply RRC filter
-            qpsk_i_filtered, qpsk_q_filtered = rrc_filter(qpsk_i_up, qpsk_q_up)
+            # Pad the upsampled signal to compensate for cascade filter delay
+            # We need 64 extra samples at the end to ensure we can extract all symbols
+            group_delay_samples = (NUM_TAPS - 1) // 2
+            total_delay_samples = 2 * group_delay_samples  # 64 samples
+            
+            # Pad at the END with zeros
+            qpsk_i_up_padded = np.concatenate([qpsk_i_up, np.zeros(total_delay_samples)])
+            qpsk_q_up_padded = np.concatenate([qpsk_q_up, np.zeros(total_delay_samples)])
+            
+            # TX RRC filter
+            qpsk_i_filtered, qpsk_q_filtered = rrc_filter(qpsk_i_up_padded, qpsk_q_up_padded)
             
             # Store for display
             qpsk_i_rrc = qpsk_i_filtered
@@ -270,7 +279,7 @@ def main(argv: Optional[list] = None) -> int:
             from mpu.model.rrc import RRC_COEFFS
             
             print(f"=== RRC Filter ===")
-            print(f"Filter parameters: {SAMPLES_PER_SYMBOL} samples/symbol, span={FILTER_SPAN}, β={ROLL_OFF}")
+            print(f"Filter parameters: {SAMPLES_PER_SYMBOL} samples/symbol, span={FILTER_SPAN}, beta={ROLL_OFF}")
             print(f"Number of taps: {len(RRC_COEFFS)}")
             print(f"Filter coefficients (first 10 and last 10 of {len(RRC_COEFFS)}):")
             print(" ".join(f"{c:+.6f}" for c in RRC_COEFFS[:10]))
@@ -337,19 +346,87 @@ def main(argv: Optional[list] = None) -> int:
         trellis = Trellis(np.array([L-1]), np.array([[G1_OCT, G2_OCT]], dtype=int))
 
         # 0) If QPSK was used, hard-demod the IQ back to diff-encoded bytes
-        # Note: If RRC was used, we skip the reverse path for now since we'd need
-        # matched filtering and downsampling (receiver-side processing)
-        if iq is not None and not args.rrc:
-            # Only do reverse path if no RRC (receiver processing not implemented yet)
+        # If RRC was used, we need to apply matched filtering and downsample first
+        if iq is not None and args.rrc:
+            print("=== RRC Receiver (Matched Filter + Downsampling) ===")
+            print()
+            
+            from mpu.model.rrc import RRC_COEFFS
+            
+            # Apply matched filter (same RRC filter)
+            i_matched = fir_filter(qpsk_i_rrc, RRC_COEFFS)
+            q_matched = fir_filter(qpsk_q_rrc, RRC_COEFFS)
+            
+            print(f"receiver matched filter output i (size = {len(i_matched)}):")
+            print(" ".join(f"{int(i):+6d}" for i in (i_matched[:40]/23170)))
+            if len(i_matched) > 40:
+                print("  ...")
+            print()
+            
+            print(f"receiver matched filter output q (size = {len(q_matched)}):")
+            print(" ".join(f"{int(q):+6d}" for q in (q_matched[:40]/23170)))
+            if len(q_matched) > 40:
+                print("  ...")
+            print()
+            
+            # Group delay through cascaded RRC filters
+            group_delay_samples = (NUM_TAPS - 1) // 2  # Per filter, in upsampled domain
+            total_delay_samples = 2 * group_delay_samples  # TX + RX cascade
+            
+            print(f"Group delay (per filter): {group_delay_samples} samples")
+            print(f"Total delay (TX + RX): {total_delay_samples} samples") 
+            print(f"Downsampling: every {SAMPLES_PER_SYMBOL}th sample")
+            print()
+            
+            # Downsample starting at the cascade delay point
+            # This gets us the ISI-free sampling instants
+            i_downsampled = i_matched[total_delay_samples::SAMPLES_PER_SYMBOL]
+            q_downsampled = q_matched[total_delay_samples::SAMPLES_PER_SYMBOL]
+            
+            # Trim to the expected number of symbols (discard tail)
+            num_symbols = len(qpsk_i)
+            i_downsampled = i_downsampled[:num_symbols]
+            q_downsampled = q_downsampled[:num_symbols]
+            
+            print(f"receiver downsampled i (size = {len(i_downsampled)}):")
+            print(" ".join(f"{int(i):+6d}" for i in (i_downsampled[:20]/23170)))
+            if len(i_downsampled) > 20:
+                print("  ...")
+            print()
+            
+            print(f"receiver downsampled q (size = {len(q_downsampled)}):")
+            print(" ".join(f"{int(q):+6d}" for q in (q_downsampled[:20]/23170)))
+            if len(q_downsampled) > 20:
+                print("  ...")
+            print()
+            
+            # Convert to int16 and clip
+            i_recovered = np.clip(i_downsampled, -32768, 32767).astype(np.int16)
+            q_recovered = np.clip(q_downsampled, -32768, 32767).astype(np.int16)
+            
+            # Re-interleave
+            iq_recovered = np.empty(len(i_recovered) + len(q_recovered), dtype=np.int16)
+            iq_recovered[0::2] = i_recovered
+            iq_recovered[1::2] = q_recovered
+            
+            # Hard demodulate
+            diff_encoded_recovered = qpsk_demod_hard_fixed(iq_recovered, interleaved=True)
+            
+            print(f"receiver qpsk hard demod output (after RRC receiver) (size = {len(diff_encoded_recovered)}) =")
+            print(" ".join(f"{b:02X}" for b in diff_encoded_recovered[:64]))
+            if len(diff_encoded_recovered) > 64:
+                print("  ...")
+            print()
+            print()
+            start_bytes = diff_encoded_recovered
+            
+        elif iq is not None and not args.rrc:
+            # Original path without RRC
             diff_encoded_recovered = qpsk_demod_hard_fixed(iq, interleaved=True)
             print(f"qpsk hard demod output (size = {len(diff_encoded_recovered)}) =")
             print(" ".join(f"{b:02X}" for b in diff_encoded_recovered))
             print()
             start_bytes = diff_encoded_recovered
-        elif args.rrc:
-            print("[info] Skipping reverse path - RRC receiver processing not implemented")
-            print()
-            return 0
         else:
             start_bytes = diff_encoded
 
