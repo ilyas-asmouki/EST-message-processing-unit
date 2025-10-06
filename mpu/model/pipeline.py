@@ -163,13 +163,9 @@ def main(argv: Optional[list] = None) -> int:
         
         # Apply RRC pulse shaping if enabled
         if args.rrc:
-            # Convert int16 to float for filtering
-            qpsk_i_float = qpsk_i.astype(np.float64)
-            qpsk_q_float = qpsk_q.astype(np.float64)
-            
-            # Upsample by SAMPLES_PER_SYMBOL (insert zeros)
-            qpsk_i_up = upsample(qpsk_i_float, SAMPLES_PER_SYMBOL)
-            qpsk_q_up = upsample(qpsk_q_float, SAMPLES_PER_SYMBOL)
+            # Upsample by SAMPLES_PER_SYMBOL (insert zeros) - keep as int16
+            qpsk_i_up = upsample(qpsk_i, SAMPLES_PER_SYMBOL)
+            qpsk_q_up = upsample(qpsk_q, SAMPLES_PER_SYMBOL)
             
             # Pad the upsampled signal to compensate for cascade filter delay
             # We need 64 extra samples at the end to ensure we can extract all symbols
@@ -177,8 +173,8 @@ def main(argv: Optional[list] = None) -> int:
             total_delay_samples = 2 * group_delay_samples  # 64 samples
             
             # Pad at the END with zeros
-            qpsk_i_up_padded = np.concatenate([qpsk_i_up, np.zeros(total_delay_samples)])
-            qpsk_q_up_padded = np.concatenate([qpsk_q_up, np.zeros(total_delay_samples)])
+            qpsk_i_up_padded = np.concatenate([qpsk_i_up, np.zeros(total_delay_samples, dtype=np.int16)])
+            qpsk_q_up_padded = np.concatenate([qpsk_q_up, np.zeros(total_delay_samples, dtype=np.int16)])
             
             # TX RRC filter
             qpsk_i_filtered, qpsk_q_filtered = rrc_filter(qpsk_i_up_padded, qpsk_q_up_padded)
@@ -291,13 +287,13 @@ def main(argv: Optional[list] = None) -> int:
                 print(f"rrc i (after upsampling and filtering) (size = {len(qpsk_i_rrc)}) =")
                 # Show first 40 samples (5 symbols worth at 8 sps)
                 display_samples = min(40, len(qpsk_i_rrc))
-                print(" ".join(f"{int(i):+6d}" for i in (qpsk_i_rrc[:display_samples]/23170)))
+                print(" ".join(f"{int(i):+6d}" for i in qpsk_i_rrc[:display_samples]))
                 if len(qpsk_i_rrc) > display_samples:
                     print("  ...")
                 print()
                 
                 print(f"rrc q (after upsampling and filtering) (size = {len(qpsk_q_rrc)}) =")
-                print(" ".join(f"{int(q):+6d}" for q in (qpsk_q_rrc[:display_samples]/23170)))
+                print(" ".join(f"{int(q):+6d}" for q in qpsk_q_rrc[:display_samples]))
                 if len(qpsk_q_rrc) > display_samples:
                     print("  ...")
                 print()
@@ -358,13 +354,13 @@ def main(argv: Optional[list] = None) -> int:
             q_matched = fir_filter(qpsk_q_rrc, RRC_COEFFS)
             
             print(f"receiver matched filter output i (size = {len(i_matched)}):")
-            print(" ".join(f"{int(i):+6d}" for i in (i_matched[:40]/23170)))
+            print(" ".join(f"{int(i):+6d}" for i in i_matched[:40]))
             if len(i_matched) > 40:
                 print("  ...")
             print()
             
             print(f"receiver matched filter output q (size = {len(q_matched)}):")
-            print(" ".join(f"{int(q):+6d}" for q in (q_matched[:40]/23170)))
+            print(" ".join(f"{int(q):+6d}" for q in q_matched[:40]))
             if len(q_matched) > 40:
                 print("  ...")
             print()
@@ -389,13 +385,13 @@ def main(argv: Optional[list] = None) -> int:
             q_downsampled = q_downsampled[:num_symbols]
             
             print(f"receiver downsampled i (size = {len(i_downsampled)}):")
-            print(" ".join(f"{int(i):+6d}" for i in (i_downsampled[:20]/23170)))
+            print(" ".join(f"{int(i):+6d}" for i in i_downsampled[:20]))
             if len(i_downsampled) > 20:
                 print("  ...")
             print()
             
             print(f"receiver downsampled q (size = {len(q_downsampled)}):")
-            print(" ".join(f"{int(q):+6d}" for q in (q_downsampled[:20]/23170)))
+            print(" ".join(f"{int(q):+6d}" for q in q_downsampled[:20]))
             if len(q_downsampled) > 20:
                 print("  ...")
             print()
