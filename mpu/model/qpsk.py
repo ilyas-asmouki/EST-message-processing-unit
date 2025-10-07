@@ -10,40 +10,14 @@
 # I/Q outputs are int16 (Q1.15), either interleaved [I0,Q0,I1,Q1,...] or shape (N,2)
 # hard-decision demod maps sign(I)->b1, sign(Q)->b0 using negative->0, non-negative->1
 
-from typing import Iterable, List, Tuple, Dict
+from typing import Dict, Tuple
 import numpy as np
+from mpu.model.helpers import bits_from_bytes, bytes_from_bits, group_bits
 
 FRAC_BITS_DEFAULT = 15  # Q1.15
 INT16_MIN = -32768
 INT16_MAX =  32767
 
-
-def _bits_from_bytes(data: bytes) -> List[int]:
-    out: List[int] = []
-    for b in data:
-        for i in range(8):
-            out.append((b >> (7 - i)) & 1)  # msb-first
-    return out
-
-def _bytes_from_bits(bits: Iterable[int]) -> bytes:
-    out = bytearray()
-    acc = 0
-    n = 0
-    for bit in bits:
-        acc = (acc << 1) | (bit & 1)
-        n += 1
-        if n == 8:
-            out.append(acc)
-            acc = 0
-            n = 0
-    if n:
-        out.append(acc << (8 - n))
-    return bytes(out)
-
-def _group_bits(bits: List[int], k: int) -> List[Tuple[int, ...]]:
-    if len(bits) % k != 0:
-        bits = bits + [0] * (k - (len(bits) % k))  # harmless pad
-    return [tuple(bits[i:i+k]) for i in range(0, len(bits), k)]
 
 # mapping
 def _saturate_int16(x: int) -> int:
@@ -76,8 +50,8 @@ def qpsk_modulate_bytes_fixed(
     # if interleaved=True, shape (2*Nsym,) as [I0, Q0, I1, Q1, ...]
     # else: shape (Nsym, 2) with columns [I, Q]
 
-    bits = _bits_from_bytes(data)
-    dibits = _group_bits(bits, 2)
+    bits = bits_from_bytes(data)
+    dibits = group_bits(bits, 2)
     lut = _qpsk_lut(frac_bits)
 
     I = np.empty(len(dibits), dtype=np.int16)
@@ -113,12 +87,12 @@ def qpsk_demod_hard_fixed(
         I = iq[:, 0]
         Q = iq[:, 1]
 
-    bits: List[int] = []
+    bits = []
     for ii, qq in zip(I, Q):
         b1 = 0 if ii < 0 else 1  # I sign
         b0 = 0 if qq < 0 else 1  # Q sign
         bits.extend((b1, b0))
-    return _bytes_from_bits(bits)
+    return bytes_from_bits(bits)
 
 def pack_iq_le_bytes(iq_interleaved: np.ndarray) -> bytes:
     # pack interleaved int16 I/Q to little-endian bytes for file/FIFO/DAC
@@ -158,8 +132,8 @@ if __name__ == "__main__":
         iq = qpsk_modulate_bytes_fixed(msg, frac_bits=FRAC_BITS_DEFAULT, interleaved=True)
         rec = qpsk_demod_hard_fixed(iq, interleaved=True)
         if rec != msg:
-            a = _bits_from_bytes(msg)
-            b = _bits_from_bytes(rec[:len(msg)])
+            a = bits_from_bytes(msg)
+            b = bits_from_bytes(rec[:len(msg)])
             first = next((i for i,(x,y) in enumerate(zip(a,b)) if x!=y), None)
             raise AssertionError(f"[FAIL] fixed hard roundtrip mismatch at bit {first}")
     print("[info] fixed hard-decision roundtrips passed")
@@ -176,7 +150,7 @@ if __name__ == "__main__":
     # 3) oracle comparison vs commpy (unit-average-energy constellation, gray)
     modem = QAMModem(4)  # 4-QAM ≡ 45 deg-rotated QPSK, gray-labeled like our mapping
     for idx, msg in enumerate(edge_msgs + rand_msgs, 1):
-        bits = np.array(_bits_from_bytes(msg), dtype=int)
+        bits = np.array(bits_from_bytes(msg), dtype=int)
         if bits.size % 2 != 0:
             bits = np.concatenate([bits, np.zeros(1, dtype=int)])
         ref_syms = modem.modulate(bits)             # complex128, Es=1

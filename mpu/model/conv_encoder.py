@@ -13,9 +13,10 @@
 
 from typing import Iterable, List
 from mpu.model.interleaver import CODEWORD_BYTES  # = 255
+from mpu.model.helpers import bits_from_bytes, bytes_from_bits
 
 # code parameters
-L = 7       # contraint length
+L = 7       # constraint length
 M = L - 1   # memory
 G1_OCT = 0o171
 G2_OCT = 0o133
@@ -26,29 +27,6 @@ G2_OCT = 0o133
 G1_TAPS = (6, 5, 4, 3, 0)
 G2_TAPS = (6, 4, 3, 1, 0)
 
-def _bits_from_bytes(data: bytes) -> List[int]:
-    # msb-first bits
-    out: List[int] = []
-    for b in data:
-        for i in range(8):
-            out.append((b >> (7 - i)) & 1)
-    return out
-
-def _bytes_from_bits(bits: Iterable[int]) -> bytes:
-    # pack bits msb-first per byte (pad last byte with zeros if needed)
-    out = bytearray()
-    acc = 0
-    n = 0
-    for bit in bits:
-        acc = (acc << 1) | (bit & 1)
-        n += 1
-        if n == 8:
-            out.append(acc)
-            acc = 0
-            n = 0
-    if n:
-        out.append(acc << (8 - n))
-    return bytes(out)
 
 def _parity_from_taps(state: List[int], taps: Iterable[int]) -> int:
     v = 0
@@ -98,15 +76,15 @@ def conv_encode_bytes_per_codeword(data: bytes, codeword_bytes: int = CODEWORD_B
 
     for off in range(0, len(data), codeword_bytes):
         block = data[off:off + codeword_bytes]
-        block_bits = _bits_from_bytes(block)             # 255*8 = 2040
+        block_bits = bits_from_bytes(block)             # 255*8 = 2040
         enc_bits   = conv_encode_block_bits(block_bits)  # 4092 bits (with 6 zero tails)
 
-        # pad **per block** to a byte boundary: add 4 zero bits → 4096 bits (512 bytes)
+        # pad **per block** to a byte boundary: add 4 zero bits -> 4096 bits (512 bytes)
         pad = (-len(enc_bits)) % 8
         if pad:
             enc_bits.extend([0] * pad)                   # pad = 4
 
-        out_bytes.extend(_bytes_from_bits(enc_bits))     # append exactly 512 bytes for this block
+        out_bytes.extend(bytes_from_bits(enc_bits))     # append exactly 512 bytes for this block
 
     return bytes(out_bytes)
 
@@ -131,10 +109,10 @@ if __name__ == "__main__":
             raise ValueError("Input must be multiples of 255 bytes")
         for off in range(0, len(data), CODEWORD_BYTES):
             block = data[off:off+CODEWORD_BYTES]
-            bits = np.array(_bits_from_bytes(block), dtype=int)
+            bits = np.array(bits_from_bytes(block), dtype=int)
             enc = commpy_conv_encode(bits, trellis, termination='term')
             out_bits.extend(int(b) for b in enc.tolist())
-        return _bytes_from_bits(out_bits)
+        return bytes_from_bits(out_bits)
 
     def compare(name: str, blk: bytes):
         ours = conv_encode(blk)          # our implementation

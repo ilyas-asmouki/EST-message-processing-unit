@@ -11,33 +11,10 @@
 #
 # note: encode is a prefix-XOR of x: y[i] = x[0] ^ x[1] ^ ... ^ x[i]
 
-from typing import Iterable, List
+from typing import List
+from mpu.model.helpers import bits_from_bytes, bytes_from_bits
 
 ENC_BYTES_PER_BLOCK = 512  # 4096 bits per CC-encoded block in this pipeline
-
-
-def _bits_from_bytes(data: bytes) -> List[int]:
-    out: List[int] = []
-    for b in data:
-        for i in range(8):
-            out.append((b >> (7 - i)) & 1)
-    return out
-
-
-def _bytes_from_bits(bits: Iterable[int]) -> bytes:
-    out = bytearray()
-    acc = 0
-    n = 0
-    for bit in bits:
-        acc = (acc << 1) | (bit & 1)
-        n += 1
-        if n == 8:
-            out.append(acc)
-            acc = 0
-            n = 0
-    if n:
-        out.append(acc << (8 - n))
-    return bytes(out)
 
 
 def _encode_block_bits(bits: List[int]) -> List[int]:
@@ -69,9 +46,9 @@ def diff_encode(data: bytes, block_bytes: int = ENC_BYTES_PER_BLOCK) -> bytes:
     out = bytearray()
     for off in range(0, len(data), block_bytes):
         blk = data[off:off + block_bytes]
-        bits = _bits_from_bytes(blk)          # 4096 bits
+        bits = bits_from_bytes(blk)          # 4096 bits
         enc  = _encode_block_bits(bits)       # reset per block
-        out.extend(_bytes_from_bits(enc))     # 512 bytes
+        out.extend(bytes_from_bits(enc))     # 512 bytes
     return bytes(out)
 
 
@@ -82,9 +59,9 @@ def diff_decode(data: bytes, block_bytes: int = ENC_BYTES_PER_BLOCK) -> bytes:
     out = bytearray()
     for off in range(0, len(data), block_bytes):
         blk = data[off:off + block_bytes]
-        bits = _bits_from_bytes(blk)          # 4096 bits
+        bits = bits_from_bytes(blk)          # 4096 bits
         dec  = _decode_block_bits(bits)       # reset per block
-        out.extend(_bytes_from_bits(dec))     # 512 bytes
+        out.extend(bytes_from_bits(dec))     # 512 bytes
     return bytes(out)
 
 
@@ -126,7 +103,7 @@ if __name__ == "__main__":
         # bitwise oracle comparisons per block
         for off in range(0, len(src), ENC_BYTES_PER_BLOCK):
             blk = src[off:off + ENC_BYTES_PER_BLOCK]
-            bits = _bits_from_bytes(blk)
+            bits = bits_from_bytes(blk)
 
             # oracle encode (prefix XOR)
             y_oracle = _oracle_prefix_xor_encode(bits)
@@ -158,7 +135,7 @@ if __name__ == "__main__":
         assert dec == blk, "edge-case roundtrip failed"
 
         # spot-check first few bytes against oracle
-        bbits = _bits_from_bytes(blk[:4])
+        bbits = bits_from_bytes(blk[:4])
         y_or  = _oracle_prefix_xor_encode(bbits)
         y_our = _encode_block_bits(bbits)
         assert y_or == y_our, "edge-case oracle mismatch"

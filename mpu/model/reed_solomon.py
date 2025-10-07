@@ -7,6 +7,7 @@
 # 0b1_1000_0111 = 0x187
 
 from typing import List
+from mpu.model.helpers import pad_to_block
 
 # code parameters
 m = 8                       # num of bits per symbol
@@ -111,14 +112,6 @@ def rs_syndromes(codeword: bytes, nsym: int = two_t, B: int = first_consec_root)
                 acc ^= gf_mul(c, exp[power])
         S.append(acc)
     return S
-
-# simple helper to zero pad to k bytes
-def pad_to_k(data: bytes, block_bytes: int = k) -> bytes:
-    # zero-pad 'data' to a multiple of k bytes. returns a new bytes object
-    rem = len(data) % block_bytes
-    if rem == 0:
-        return data
-    return data + bytes(block_bytes - rem)
 
 
 

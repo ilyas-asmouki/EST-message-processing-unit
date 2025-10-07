@@ -54,7 +54,7 @@ def _invert_perm(perm: List[int]) -> List[int]:
     return inv
 
 def interleave(data: bytes, I: int, block_len: int = CODEWORD_BYTES) -> bytes:
-    # 'data' lengrh must be a multiple of block_len
+    # 'data' length must be a multiple of block_len
     # returns interleaved bytes
     if len(data) % block_len != 0:
         raise ValueError(f"Input length must be a multiple of {block_len} bytes (got {len(data)})")
