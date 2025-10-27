@@ -4,7 +4,9 @@
 # input -> RS(255, 223) encoder -> byte wise interleaver (I=2) -> ouput
 
 # examples:
-#   python -m mpu.model.pipeline --text "HELLO WORLD" --depth 4 --pad zero --print
+#   python -m mpu.model.pipeline --text "HELLO WORLD"  # shows terminal output + visualizations
+#   python -m mpu.model.pipeline --text "HELLO WORLD" --no-visualize  # terminal output only
+#   python -m mpu.model.pipeline --text "HELLO WORLD" --save-figs pipeline  # saves plots to files
 #   python -m mpu.model.pipeline --hex "0011223344" --depth 2 --pad zero --out out.bin
 #   python -m mpu.model.pipeline --infile input.bin --depth 1 --check --print
 
@@ -58,6 +60,88 @@ def _chunk(seq: bytes, size: int):
     for i in range(0, len(seq), size):
         yield seq[i:i+size]
 
+def _generate_visualizations(data_padded: bytes, rs_out: bytes, interleaved: bytes,
+                             scrambled: bytes, convolved: bytes, diff_encoded: bytes,
+                             iq: np.ndarray, qpsk_i: np.ndarray,
+                             qpsk_q: np.ndarray, qpsk_i_rrc: np.ndarray,
+                             qpsk_q_rrc: np.ndarray, args: argparse.Namespace):
+    """Generate visualization figures for the pipeline stages"""
+    try:
+        # Import visualization module (only when needed)
+        from mpu.model import pipeline_visualizer as pv
+        
+        print("\nGenerating visualizations...")
+        figures = []
+        figure_names = []
+        
+        print("  [7/7] Decoder Path...")
+        fig7 = pv.create_decoder_figure(diff_encoded, iq, qpsk_i_rrc, qpsk_q_rrc, args)
+        figures.append(fig7)
+        figure_names.append("7_decoder")
+        
+        print("  [6/7] RRC Pulse Shaping...")
+        fig6 = pv.create_rrc_figure(qpsk_i, qpsk_q, qpsk_i_rrc, qpsk_q_rrc)
+        figures.append(fig6)
+        figure_names.append("6_rrc")
+        
+        print("  [5/7] QPSK Modulation...")
+        fig5 = pv.create_qpsk_figure(diff_encoded, iq, qpsk_i, qpsk_q, args)
+        figures.append(fig5)
+        figure_names.append("5_qpsk")
+        
+        print("  [4/7] Differential Encoding...")
+        fig4 = pv.create_diff_encoder_figure(convolved, diff_encoded)
+        figures.append(fig4)
+        figure_names.append("4_diff_encoder")
+        
+        print("  [3/7] Convolutional Encoding...")
+        fig3 = pv.create_conv_encoder_figure(scrambled, convolved)
+        figures.append(fig3)
+        figure_names.append("3_conv_encoder")
+        
+        print("  [2/7] Scrambling...")
+        fig2 = pv.create_scrambler_figure(interleaved, scrambled, rs_out, args)
+        figures.append(fig2)
+        figure_names.append("2_scrambler")
+        
+        print("  [1/7] RS & Interleaving...")
+        fig1 = pv.create_rs_interleaver_figure(data_padded, rs_out, interleaved, args)
+        figures.append(fig1)
+        figure_names.append("1_rs_interleaver")
+        
+        # Save or display
+        if args.save_figs:
+            print(f"\nSaving figures with prefix '{args.save_figs}'...")
+            for fig, name in zip(figures, figure_names):
+                filename = f"{args.save_figs}_{name}.png"
+                fig.savefig(filename, dpi=150, bbox_inches='tight')
+                print(f"  Saved: {filename}")
+            print("All figures saved successfully!")
+            
+            # Close all figures
+            import matplotlib.pyplot as plt
+            for fig in figures:
+                plt.close(fig)
+        else:
+            print("\nDisplaying figures interactively...")
+            print("Close each figure window to see the next one.")
+            import matplotlib.pyplot as plt
+            for idx, (fig, name) in enumerate(zip(figures, figure_names), 1):
+                print(f"  Showing stage {name[0]}/7: {name[2:]}")
+                plt.show()
+                plt.close(fig)
+        
+        print("\nVisualization complete!")
+        
+    except ImportError as e:
+        print(f"\nWarning: Visualization unavailable - {e}", file=sys.stderr)
+        print("Install matplotlib and scipy to enable visualizations.", file=sys.stderr)
+    except Exception as e:
+        print(f"\nError creating visualizations: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+
+
 def main(argv: Optional[list] = None) -> int:
     p = argparse.ArgumentParser(description="Run RS(255,223) + interleaver golden pipeline.")
     src = p.add_mutually_exclusive_group()
@@ -97,8 +181,21 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--iq-out", help="If --qpsk-fixed, write interleaved int16 LE [I0,Q0,I1,Q1,...] to this file.")
     p.add_argument("--iq-print", type=int, default=0,
                    help="If --qpsk-fixed, print first N I/Q pairs as integers.")
+    
+    # Visualization options
+    p.add_argument("--visualize", dest="visualize", action="store_true",
+                   help="Generate visualization figures for all pipeline stages (enabled by default).")
+    p.add_argument("--no-visualize", dest="visualize", action="store_false",
+                   help="Disable visualization figures.")
+    p.set_defaults(visualize=True)
+    p.add_argument("--save-figs", metavar="PREFIX",
+                   help="Save visualization figures with this prefix (e.g., 'pipeline' -> 'pipeline_1_rs.png'). Implies --visualize.")
 
     args = p.parse_args(argv)
+    
+    # --save-figs implies --visualize
+    if args.save_figs:
+        args.visualize = True
 
     data = _read_input(args)
 
@@ -217,6 +314,11 @@ def main(argv: Optional[list] = None) -> int:
 
     else:
         final_out = diff_encoded
+
+    # Generate visualizations if requested (before text output)
+    if args.visualize and args.qpsk_fixed:
+        _generate_visualizations(data_for_rs, rs_out, interleaved, scrambled, convolved,
+                                diff_encoded, iq, qpsk_i, qpsk_q, qpsk_i_rrc, qpsk_q_rrc, args)
 
     # Output
     if args.out:
@@ -475,7 +577,9 @@ def main(argv: Optional[list] = None) -> int:
         print(f"reverse RS output (size = {len(restored)}) =")
         print(" ".join(f"{b:02X}" for b in restored))
         print()
-        print(f"restored ascii = '{restored.decode('utf-8', errors='replace').replace(chr(0), '\\x00')}'")
+        null_char = chr(0)
+        restored_text = restored.decode('utf-8', errors='replace').replace(null_char, '\\x00')
+        print(f"restored ascii = '{restored_text}'")
 
     if args.hexout and not args.qpsk_fixed:
         print(final_out.hex())
