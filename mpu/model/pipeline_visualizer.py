@@ -345,8 +345,7 @@ def create_qpsk_figure(diff_encoded: bytes, iq: np.ndarray,
     
     # QPSK outputs
     ax = fig.add_subplot(gs[1, 0])
-    plot_qpsk_constellation(ax, iq, f'QPSK Constellation (Q1.{args.frac_bits})', 
-                           args.frac_bits)
+    plot_qpsk_constellation(ax, iq, f'QPSK Constellation (Q1.15)', 15)
     
     ax = fig.add_subplot(gs[1, 1])
     # I vs sample
@@ -451,57 +450,48 @@ def create_decoder_figure(diff_encoded: bytes, iq: np.ndarray,
     fig = plt.figure(figsize=(16, 12))
     gs = GridSpec(3, 3, figure=fig, hspace=0.3, wspace=0.3)
     
-    # RRC receiver (matched filter + downsample)
-    if args.rrc:
-        # Matched filtering
-        i_matched = fir_filter(qpsk_i_rrc, RRC_COEFFS)
-        q_matched = fir_filter(qpsk_q_rrc, RRC_COEFFS)
-        
-        ax = fig.add_subplot(gs[0, 0])
-        plot_waveform(ax, i_matched.astype(float), 
-                     'After Matched Filter (I)', max_samples=1600)
-        
-        # Downsample
-        group_delay = (NUM_TAPS - 1) // 2
-        total_delay = 2 * group_delay
-        i_down = i_matched[total_delay::SAMPLES_PER_SYMBOL]
-        q_down = q_matched[total_delay::SAMPLES_PER_SYMBOL]
-        
-        # Trim and interleave
-        num_symbols = len(iq) // 2
-        i_recovered = np.clip(i_down[:num_symbols], -32768, 32767).astype(np.int16)
-        q_recovered = np.clip(q_down[:num_symbols], -32768, 32767).astype(np.int16)
-        iq_recovered = np.empty(len(i_recovered) * 2, dtype=np.int16)
-        iq_recovered[0::2] = i_recovered
-        iq_recovered[1::2] = q_recovered
-        
-        ax = fig.add_subplot(gs[0, 1])
-        plot_qpsk_constellation(ax, iq_recovered, 
-                               'Recovered Constellation', args.frac_bits)
-        
-        # Hard demod
-        diff_encoded_recovered = qpsk_demod_hard_fixed(iq_recovered, interleaved=True)
-        
-        ax = fig.add_subplot(gs[0, 2])
-        errors = sum(a != b for a, b in zip(diff_encoded, diff_encoded_recovered))
-        ax.text(0.5, 0.5, f'QPSK Hard Demod:\n\n'
-                          f'Total bytes: {len(diff_encoded)}\n'
-                          f'Bit errors: {errors * 8}\n'
-                          f'BER: {errors * 8 / (len(diff_encoded) * 8):.2e}',
-                ha='center', va='center', transform=ax.transAxes,
-                fontsize=12, bbox=dict(boxstyle='round', 
-                                      facecolor='lightgreen' if errors == 0 else 'lightcoral'))
-        ax.axis('off')
-        
-        start_bytes = diff_encoded_recovered
-    else:
-        start_bytes = diff_encoded
-        
-        ax = fig.add_subplot(gs[0, :])
-        ax.text(0.5, 0.5, 'RRC disabled - using direct QPSK symbols',
-                ha='center', va='center', transform=ax.transAxes,
-                fontsize=12, bbox=dict(boxstyle='round', facecolor='wheat'))
-        ax.axis('off')
+    # RRC receiver (matched filter + downsample) - always enabled
+    # Matched filtering
+    i_matched = fir_filter(qpsk_i_rrc, RRC_COEFFS)
+    q_matched = fir_filter(qpsk_q_rrc, RRC_COEFFS)
+    
+    ax = fig.add_subplot(gs[0, 0])
+    plot_waveform(ax, i_matched.astype(float), 
+                 'After Matched Filter (I)', max_samples=1600)
+    
+    # Downsample
+    group_delay = (NUM_TAPS - 1) // 2
+    total_delay = 2 * group_delay
+    i_down = i_matched[total_delay::SAMPLES_PER_SYMBOL]
+    q_down = q_matched[total_delay::SAMPLES_PER_SYMBOL]
+    
+    # Trim and interleave
+    num_symbols = len(iq) // 2
+    i_recovered = np.clip(i_down[:num_symbols], -32768, 32767).astype(np.int16)
+    q_recovered = np.clip(q_down[:num_symbols], -32768, 32767).astype(np.int16)
+    iq_recovered = np.empty(len(i_recovered) * 2, dtype=np.int16)
+    iq_recovered[0::2] = i_recovered
+    iq_recovered[1::2] = q_recovered
+    
+    ax = fig.add_subplot(gs[0, 1])
+    plot_qpsk_constellation(ax, iq_recovered, 
+                           'Recovered Constellation', 15)
+    
+    # Hard demod
+    diff_encoded_recovered = qpsk_demod_hard_fixed(iq_recovered, interleaved=True)
+    
+    ax = fig.add_subplot(gs[0, 2])
+    errors = sum(a != b for a, b in zip(diff_encoded, diff_encoded_recovered))
+    ax.text(0.5, 0.5, f'QPSK Hard Demod:\n\n'
+                      f'Total bytes: {len(diff_encoded)}\n'
+                      f'Bit errors: {errors * 8}\n'
+                      f'BER: {errors * 8 / (len(diff_encoded) * 8):.2e}',
+            ha='center', va='center', transform=ax.transAxes,
+            fontsize=12, bbox=dict(boxstyle='round', 
+                                  facecolor='lightgreen' if errors == 0 else 'lightcoral'))
+    ax.axis('off')
+    
+    start_bytes = diff_encoded_recovered
     
     # Differential decode
     de_diff = diff_decode(start_bytes)
@@ -667,7 +657,7 @@ def main(argv: Optional[list] = None) -> int:
     data_padded = pad_to_block(data, RS_K)
     
     print(f"Processing {len(data_padded)} bytes through pipeline...")
-    print(f"Configuration: depth={args.depth}, scramble={not args.no_scramble}, RRC={args.rrc}")
+    print(f"Configuration: depth={args.depth}, scramble={not args.no_scramble}, RRC=True")
     
     try:
         # Process through pipeline stages
@@ -690,30 +680,27 @@ def main(argv: Optional[list] = None) -> int:
         diff_encoded = diff_encode(convolved)
         
         print("  - QPSK modulation...")
-        iq = qpsk_modulate_bytes_fixed(diff_encoded, frac_bits=args.frac_bits, 
+        iq = qpsk_modulate_bytes_fixed(diff_encoded, frac_bits=15, 
                                        interleaved=True)
         qpsk_i = iq[0::2]
         qpsk_q = iq[1::2]
         
-        # RRC filtering if enabled
-        qpsk_i_rrc = None
-        qpsk_q_rrc = None
-        if args.rrc:
-            print("  - RRC pulse shaping...")
-            # Upsample
-            qpsk_i_up = upsample(qpsk_i, SAMPLES_PER_SYMBOL)
-            qpsk_q_up = upsample(qpsk_q, SAMPLES_PER_SYMBOL)
-            
-            # Pad for filter delay
-            group_delay = (NUM_TAPS - 1) // 2
-            total_delay = 2 * group_delay
-            qpsk_i_up_padded = np.concatenate([qpsk_i_up, 
-                                               np.zeros(total_delay, dtype=np.int16)])
-            qpsk_q_up_padded = np.concatenate([qpsk_q_up, 
-                                               np.zeros(total_delay, dtype=np.int16)])
-            
-            # Filter
-            qpsk_i_rrc, qpsk_q_rrc = rrc_filter(qpsk_i_up_padded, qpsk_q_up_padded)
+        # RRC filtering - always enabled
+        print("  - RRC pulse shaping...")
+        # Upsample
+        qpsk_i_up = upsample(qpsk_i, SAMPLES_PER_SYMBOL)
+        qpsk_q_up = upsample(qpsk_q, SAMPLES_PER_SYMBOL)
+        
+        # Pad for filter delay
+        group_delay = (NUM_TAPS - 1) // 2
+        total_delay = 2 * group_delay
+        qpsk_i_up_padded = np.concatenate([qpsk_i_up, 
+                                           np.zeros(total_delay, dtype=np.int16)])
+        qpsk_q_up_padded = np.concatenate([qpsk_q_up, 
+                                           np.zeros(total_delay, dtype=np.int16)])
+        
+        # Filter
+        qpsk_i_rrc, qpsk_q_rrc = rrc_filter(qpsk_i_up_padded, qpsk_q_up_padded)
         
         print("\nGenerating figures...")
         
@@ -724,17 +711,15 @@ def main(argv: Optional[list] = None) -> int:
         if not args.skip_decoder:
             print("  [7/7] Decoder Path...")
             fig7 = create_decoder_figure(diff_encoded, iq, 
-                                         qpsk_i_rrc if args.rrc else qpsk_i,
-                                         qpsk_q_rrc if args.rrc else qpsk_q,
-                                         args)
+                                         qpsk_i_rrc, qpsk_q_rrc, args)
             figures.append(fig7)
             figure_names.append("7_decoder")
         
-        if args.rrc:
-            print("  [6/7] RRC Pulse Shaping...")
-            fig6 = create_rrc_figure(qpsk_i, qpsk_q, qpsk_i_rrc, qpsk_q_rrc)
-            figures.append(fig6)
-            figure_names.append("6_rrc")
+        # RRC figure - always enabled
+        print("  [6/7] RRC Pulse Shaping...")
+        fig6 = create_rrc_figure(qpsk_i, qpsk_q, qpsk_i_rrc, qpsk_q_rrc)
+        figures.append(fig6)
+        figure_names.append("6_rrc")
         
         print("  [5/7] QPSK Modulation...")
         fig5 = create_qpsk_figure(diff_encoded, iq, qpsk_i, qpsk_q, args)
@@ -790,6 +775,83 @@ def main(argv: Optional[list] = None) -> int:
         return 1
     
     return 0
+
+
+def generate_visualizations(data_padded: bytes, rs_out: bytes, interleaved: bytes,
+                           scrambled: bytes, convolved: bytes, diff_encoded: bytes,
+                           iq: np.ndarray, qpsk_i: np.ndarray,
+                           qpsk_q: np.ndarray, qpsk_i_rrc: np.ndarray,
+                           qpsk_q_rrc: np.ndarray, args: argparse.Namespace):
+    """Generate visualization figures for the pipeline stages"""
+    try:
+        print("\nGenerating visualizations...")
+        figures = []
+        figure_names = []
+        
+        print("  [7/7] Decoder Path...")
+        fig7 = create_decoder_figure(diff_encoded, iq, qpsk_i_rrc, qpsk_q_rrc, args)
+        figures.append(fig7)
+        figure_names.append("7_decoder")
+        
+        print("  [6/7] RRC Pulse Shaping...")
+        fig6 = create_rrc_figure(qpsk_i, qpsk_q, qpsk_i_rrc, qpsk_q_rrc)
+        figures.append(fig6)
+        figure_names.append("6_rrc")
+        
+        print("  [5/7] QPSK Modulation...")
+        fig5 = create_qpsk_figure(diff_encoded, iq, qpsk_i, qpsk_q, args)
+        figures.append(fig5)
+        figure_names.append("5_qpsk")
+        
+        print("  [4/7] Differential Encoding...")
+        fig4 = create_diff_encoder_figure(convolved, diff_encoded)
+        figures.append(fig4)
+        figure_names.append("4_diff_encoder")
+        
+        print("  [3/7] Convolutional Encoding...")
+        fig3 = create_conv_encoder_figure(scrambled, convolved)
+        figures.append(fig3)
+        figure_names.append("3_conv_encoder")
+        
+        print("  [2/7] Scrambling...")
+        fig2 = create_scrambler_figure(interleaved, scrambled, rs_out, args)
+        figures.append(fig2)
+        figure_names.append("2_scrambler")
+        
+        print("  [1/7] RS & Interleaving...")
+        fig1 = create_rs_interleaver_figure(data_padded, rs_out, interleaved, args)
+        figures.append(fig1)
+        figure_names.append("1_rs_interleaver")
+        
+        # Save or display
+        if hasattr(args, 'save_figs') and args.save_figs:
+            print(f"\nSaving figures with prefix '{args.save_figs}'...")
+            for fig, name in zip(figures, figure_names):
+                filename = f"{args.save_figs}_{name}.png"
+                fig.savefig(filename, dpi=150, bbox_inches='tight')
+                print(f"  Saved: {filename}")
+            print("All figures saved successfully!")
+            
+            # Close all figures
+            for fig in figures:
+                plt.close(fig)
+        else:
+            print("\nDisplaying figures interactively...")
+            print("Close each figure window to see the next one.")
+            for idx, (fig, name) in enumerate(zip(figures, figure_names), 1):
+                print(f"  Showing stage {name[0]}/7: {name[2:]}")
+                plt.show()
+                plt.close(fig)
+        
+        print("\nVisualization complete!")
+        
+    except ImportError as e:
+        print(f"\nWarning: Visualization unavailable - {e}", file=sys.stderr)
+        print("Install matplotlib and scipy to enable visualizations.", file=sys.stderr)
+    except Exception as e:
+        print(f"\nError creating visualizations: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
