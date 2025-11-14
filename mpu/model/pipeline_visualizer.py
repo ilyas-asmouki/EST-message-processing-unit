@@ -20,7 +20,7 @@ from mpu.model.qpsk import qpsk_modulate_bytes_fixed, qpsk_demod_hard_fixed, FRA
 from mpu.model.rrc import (rrc_filter, upsample, fir_filter, SAMPLES_PER_SYMBOL, 
                            FILTER_SPAN, ROLL_OFF, NUM_TAPS, RRC_COEFFS,
                            fixed_to_float, COEFF_FRAC)
-from mpu.model.helpers import bits_from_bytes, pad_to_block
+from mpu.model.helpers import bits_from_bytes, pad_to_block, add_awgn
 
 
 
@@ -189,6 +189,55 @@ def plot_comparison_histogram(ax, data1: bytes, data2: bytes,
     ax.set_title(title)
     ax.grid(True, alpha=0.3)
     ax.legend()
+
+
+def matched_filter_and_downsample(
+    i_stream: np.ndarray,
+    q_stream: np.ndarray,
+    symbol_count: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
+    """Apply the RRC matched filter and downsample to symbol rate."""
+    i_matched = fir_filter(i_stream, RRC_COEFFS)
+    q_matched = fir_filter(q_stream, RRC_COEFFS)
+
+    group_delay = (NUM_TAPS - 1) // 2
+    total_delay = 2 * group_delay
+
+    i_down = i_matched[total_delay::SAMPLES_PER_SYMBOL][:symbol_count]
+    q_down = q_matched[total_delay::SAMPLES_PER_SYMBOL][:symbol_count]
+
+    return i_matched, q_matched, i_down, q_down, total_delay
+
+
+def format_noise_summary(noise_metrics: Optional[dict]) -> str:
+    """Create a compact text summary for the AWGN settings/measurements."""
+    if not noise_metrics or not noise_metrics.get("enabled"):
+        return "AWGN disabled\nIdeal channel (no impairment)"
+
+    lines = ["AWGN enabled"]
+    target = noise_metrics.get("target_snr_db")
+    if target is not None:
+        lines.append(f"Target SNR: {target:.2f} dB")
+    else:
+        lines.append(f"Noise σ: {noise_metrics.get('noise_std', 0.0):.2f} LSB")
+
+    measured = noise_metrics.get("measured_snr_db")
+    if measured is not None:
+        lines.append(f"Measured SNR: {measured:.2f} dB")
+
+    sig_pow = noise_metrics.get("signal_power")
+    if sig_pow is not None:
+        lines.append(f"Signal power: {sig_pow:.3e}")
+
+    noise_pow = noise_metrics.get("measured_noise_power")
+    if noise_pow is not None:
+        lines.append(f"Noise power: {noise_pow:.3e}")
+
+    seed = noise_metrics.get("seed")
+    if seed is not None:
+        lines.append(f"Seed: {seed}")
+
+    return "\n".join(lines)
 
 
 def create_rs_interleaver_figure(data: bytes, rs_out: bytes, 
@@ -370,8 +419,14 @@ def create_qpsk_figure(diff_encoded: bytes, iq: np.ndarray,
     return fig
 
 
-def create_rrc_figure(qpsk_i: np.ndarray, qpsk_q: np.ndarray,
-                      qpsk_i_rrc: np.ndarray, qpsk_q_rrc: np.ndarray):
+def create_rrc_figure(
+    qpsk_i: np.ndarray,
+    qpsk_q: np.ndarray,
+    qpsk_i_rrc: np.ndarray,
+    qpsk_q_rrc: np.ndarray,
+    qpsk_i_channel: Optional[np.ndarray] = None,
+    qpsk_q_channel: Optional[np.ndarray] = None,
+):
     """Figure 6: RRC Pulse Shaping"""
     fig = plt.figure(figsize=(16, 12))
     gs = GridSpec(3, 3, figure=fig, hspace=0.3, wspace=0.3)
@@ -413,8 +468,16 @@ def create_rrc_figure(qpsk_i: np.ndarray, qpsk_q: np.ndarray,
                  'I Channel Before RRC', max_samples=200)
     
     ax = fig.add_subplot(gs[1, 1])
-    plot_waveform(ax, qpsk_i_rrc.astype(float), 
-                 'I Channel After RRC (upsampled)', max_samples=1600)
+    samples = min(1600, len(qpsk_i_rrc))
+    ax.plot(qpsk_i_rrc[:samples].astype(float), linewidth=0.6, label='TX RRC')
+    if qpsk_i_channel is not None:
+        ax.plot(qpsk_i_channel[:samples].astype(float), linewidth=0.6,
+                label='Post-Channel', alpha=0.7, color='coral')
+        ax.legend(loc='upper right')
+    ax.set_xlabel('Sample Index')
+    ax.set_ylabel('Amplitude')
+    ax.set_title('I Channel After RRC (vs. post-channel)')
+    ax.grid(True, alpha=0.3)
     
     ax = fig.add_subplot(gs[1, 2])
     plot_eye_diagram(ax, qpsk_i_rrc.astype(float), SAMPLES_PER_SYMBOL,
@@ -426,24 +489,145 @@ def create_rrc_figure(qpsk_i: np.ndarray, qpsk_q: np.ndarray,
                  'Q Channel Before RRC', max_samples=200)
     
     ax = fig.add_subplot(gs[2, 1])
-    plot_waveform(ax, qpsk_q_rrc.astype(float), 
-                 'Q Channel After RRC (upsampled)', max_samples=1600)
+    samples = min(1600, len(qpsk_q_rrc))
+    ax.plot(qpsk_q_rrc[:samples].astype(float), linewidth=0.6, label='TX RRC')
+    if qpsk_q_channel is not None:
+        ax.plot(qpsk_q_channel[:samples].astype(float), linewidth=0.6,
+                label='Post-Channel', alpha=0.7, color='coral')
+        ax.legend(loc='upper right')
+    ax.set_xlabel('Sample Index')
+    ax.set_ylabel('Amplitude')
+    ax.set_title('Q Channel After RRC (vs. post-channel)')
+    ax.grid(True, alpha=0.3)
     
     ax = fig.add_subplot(gs[2, 2])
     # PSD
     signal_norm = qpsk_i_rrc.astype(float) / (2**15)
     plot_psd(ax, signal_norm, fs=SAMPLES_PER_SYMBOL, 
-            title='Power Spectral Density')
+            title='Power Spectral Density (I channel)')
+    if qpsk_i_channel is not None:
+        from scipy import signal as sp_signal
+        signal_noisy_norm = qpsk_i_channel.astype(float) / (2**15)
+        f, psd = sp_signal.welch(
+            signal_noisy_norm,
+            fs=SAMPLES_PER_SYMBOL,
+            nperseg=min(2048, len(signal_noisy_norm) // 4),
+        )
+        ax.semilogy(f, psd, color='coral', alpha=0.7, label='Post-Channel')
+        ax.legend()
     
     fig.suptitle('Stage 6: Root Raised Cosine Pulse Shaping', 
                  fontsize=14, fontweight='bold')
     return fig
 
 
+def create_channel_figure(
+    qpsk_i_rrc: np.ndarray,
+    qpsk_q_rrc: np.ndarray,
+    qpsk_i_channel: np.ndarray,
+    qpsk_q_channel: np.ndarray,
+    iq: np.ndarray,
+    noise_metrics: Optional[dict],
+):
+    """Figure 7: AWGN channel visualization."""
+    fig = plt.figure(figsize=(16, 12))
+    gs = GridSpec(3, 3, figure=fig, hspace=0.3, wspace=0.3)
+
+    def _plot_overlay(ax, clean: np.ndarray, noisy: np.ndarray, title: str):
+        n = min(800, len(clean))
+        ax.plot(clean[:n].astype(float), label='TX RRC', linewidth=0.6)
+        ax.plot(noisy[:n].astype(float), label='Post-Channel', linewidth=0.6,
+                alpha=0.7, color='coral')
+        ax.set_xlabel('Sample Index')
+        ax.set_ylabel('Amplitude')
+        ax.set_title(title)
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc='upper right')
+
+    _plot_overlay(fig.add_subplot(gs[0, 0]),
+                  qpsk_i_rrc, qpsk_i_channel,
+                  'I Channel (first 800 samples)')
+    _plot_overlay(fig.add_subplot(gs[0, 1]),
+                  qpsk_q_rrc, qpsk_q_channel,
+                  'Q Channel (first 800 samples)')
+
+    ax = fig.add_subplot(gs[0, 2])
+    ax.text(0.5, 0.5, format_noise_summary(noise_metrics),
+            ha='center', va='center', transform=ax.transAxes,
+            fontsize=12, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7),
+            family='monospace')
+    ax.axis('off')
+
+    ax = fig.add_subplot(gs[1, 0])
+    plot_eye_diagram(ax, qpsk_i_rrc.astype(float), SAMPLES_PER_SYMBOL,
+                     'Eye Diagram (TX RRC)', n_traces=120)
+
+    ax = fig.add_subplot(gs[1, 1])
+    plot_eye_diagram(ax, qpsk_i_channel.astype(float), SAMPLES_PER_SYMBOL,
+                     'Eye Diagram (Post-Channel)', n_traces=120)
+
+    ax = fig.add_subplot(gs[1, 2])
+    noise_i = (qpsk_i_channel.astype(np.int32) - qpsk_i_rrc.astype(np.int32)).astype(float)
+    noise_q = (qpsk_q_channel.astype(np.int32) - qpsk_q_rrc.astype(np.int32)).astype(float)
+    ax.hist(noise_i, bins=80, alpha=0.6, label='I', color='steelblue')
+    ax.hist(noise_q, bins=80, alpha=0.6, label='Q', color='coral')
+    ax.set_xlabel('Noise Value (LSB)')
+    ax.set_ylabel('Count')
+    ax.set_title('Noise Sample Histogram')
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+
+    ax = fig.add_subplot(gs[2, 0])
+    plot_psd(ax, qpsk_i_rrc.astype(float) / (2**15),
+             fs=SAMPLES_PER_SYMBOL, title='PSD (I, TX RRC)')
+
+    ax = fig.add_subplot(gs[2, 1])
+    plot_psd(ax, qpsk_i_channel.astype(float) / (2**15),
+             fs=SAMPLES_PER_SYMBOL, title='PSD (I, Post-Channel)')
+
+    symbol_count = len(iq) // 2
+    _, _, i_down_clean, q_down_clean, _ = matched_filter_and_downsample(
+        qpsk_i_rrc, qpsk_q_rrc, symbol_count)
+    _, _, i_down_noisy, q_down_noisy, _ = matched_filter_and_downsample(
+        qpsk_i_channel, qpsk_q_channel, symbol_count)
+
+    ax = fig.add_subplot(gs[2, 2])
+    scale = float((1 << FRAC_BITS_DEFAULT) - 1)
+    clean_indices = np.arange(len(i_down_clean))
+    noisy_indices = np.arange(len(i_down_noisy))
+    if len(clean_indices) > 4000:
+        clean_indices = np.random.choice(clean_indices, 4000, replace=False)
+    if len(noisy_indices) > 4000:
+        noisy_indices = np.random.choice(noisy_indices, 4000, replace=False)
+
+    ax.scatter(i_down_clean[clean_indices].astype(float) / scale,
+               q_down_clean[clean_indices].astype(float) / scale,
+               alpha=0.15, s=2, color='steelblue', label='Ideal')
+    ax.scatter(i_down_noisy[noisy_indices].astype(float) / scale,
+               q_down_noisy[noisy_indices].astype(float) / scale,
+               alpha=0.15, s=2, color='coral', label='Post-Channel')
+    ax.set_xlabel('In-Phase (I)')
+    ax.set_ylabel('Quadrature (Q)')
+    ax.set_title('Constellation After Matched Filter')
+    ax.set_aspect('equal')
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+
+    ideal_val = 1.0 / np.sqrt(2)
+    ax.plot([-ideal_val, -ideal_val, ideal_val, ideal_val],
+            [-ideal_val, ideal_val, ideal_val, -ideal_val],
+            'k+', markersize=10, markeredgewidth=1.5)
+
+    fig.suptitle('Stage 7: AWGN Channel and Noise Metrics',
+                 fontsize=14, fontweight='bold')
+    return fig
+
+
 def create_decoder_figure(diff_encoded: bytes, iq: np.ndarray,
-                         qpsk_i_rrc: np.ndarray, qpsk_q_rrc: np.ndarray,
-                         args: argparse.Namespace):
-    """Figure 7: Receiver/Decoder Path"""
+                         qpsk_i_channel: np.ndarray, qpsk_q_channel: np.ndarray,
+                         args: argparse.Namespace,
+                         noise_metrics: Optional[dict] = None):
+    """Figure 8: Receiver/Decoder Path"""
     from commpy.channelcoding.convcode import Trellis, viterbi_decode
     import reedsolo
     
@@ -451,24 +635,25 @@ def create_decoder_figure(diff_encoded: bytes, iq: np.ndarray,
     gs = GridSpec(3, 3, figure=fig, hspace=0.3, wspace=0.3)
     
     # RRC receiver (matched filter + downsample) - always enabled
-    # Matched filtering
-    i_matched = fir_filter(qpsk_i_rrc, RRC_COEFFS)
-    q_matched = fir_filter(qpsk_q_rrc, RRC_COEFFS)
+    symbol_count = len(iq) // 2
+    i_matched, q_matched, i_downsampled, q_downsampled, total_delay = \
+        matched_filter_and_downsample(qpsk_i_channel, qpsk_q_channel, symbol_count)
     
     ax = fig.add_subplot(gs[0, 0])
     plot_waveform(ax, i_matched.astype(float), 
                  'After Matched Filter (I)', max_samples=1600)
-    
-    # Downsample
-    group_delay = (NUM_TAPS - 1) // 2
-    total_delay = 2 * group_delay
-    i_down = i_matched[total_delay::SAMPLES_PER_SYMBOL]
-    q_down = q_matched[total_delay::SAMPLES_PER_SYMBOL]
+    info_text = f'Delay={total_delay} samples'
+    if noise_metrics and noise_metrics.get("enabled"):
+        snr_val = noise_metrics.get("measured_snr_db")
+        if snr_val is not None:
+            info_text += f'\nSNR≈{snr_val:.2f} dB'
+    ax.text(0.02, 0.88, info_text,
+            transform=ax.transAxes, fontsize=8,
+            bbox=dict(boxstyle='round', facecolor='white', alpha=0.6))
     
     # Trim and interleave
-    num_symbols = len(iq) // 2
-    i_recovered = np.clip(i_down[:num_symbols], -32768, 32767).astype(np.int16)
-    q_recovered = np.clip(q_down[:num_symbols], -32768, 32767).astype(np.int16)
+    i_recovered = np.clip(i_downsampled, -32768, 32767).astype(np.int16)
+    q_recovered = np.clip(q_downsampled, -32768, 32767).astype(np.int16)
     iq_recovered = np.empty(len(i_recovered) * 2, dtype=np.int16)
     iq_recovered[0::2] = i_recovered
     iq_recovered[1::2] = q_recovered
@@ -574,7 +759,7 @@ def create_decoder_figure(diff_encoded: bytes, iq: np.ndarray,
                    ha='center', va='center', transform=ax.transAxes,
                    fontsize=12, bbox=dict(boxstyle='round', facecolor='lightcoral'))
             ax.axis('off')
-            fig.suptitle('Stage 7: Receiver/Decoder Path (RRC RX -> Diff Decode -> Viterbi -> Descramble -> Deinterleave -> RS)', 
+            fig.suptitle('Stage 8: Receiver/Decoder Path (RRC RX -> Diff Decode -> Viterbi -> Descramble -> Deinterleave -> RS)', 
                          fontsize=14, fontweight='bold')
             return fig
     
@@ -599,7 +784,7 @@ def create_decoder_figure(diff_encoded: bytes, iq: np.ndarray,
                fontsize=12, bbox=dict(boxstyle='round', facecolor='wheat'))
     ax.axis('off')
     
-    fig.suptitle('Stage 7: Receiver/Decoder Path (RRC RX -> Diff Decode -> Viterbi -> Descramble -> Deinterleave -> RS)', 
+    fig.suptitle('Stage 8: Receiver/Decoder Path (RRC RX -> Diff Decode -> Viterbi -> Descramble -> Deinterleave -> RS)', 
                  fontsize=14, fontweight='bold')
     return fig
 
@@ -631,6 +816,15 @@ def main(argv: Optional[list] = None) -> int:
                   help="DPI for saved figures (default: 150).")
     p.add_argument("--skip-decoder", action="store_true",
                   help="Skip decoder figure (faster for encoder-only analysis).")
+
+    noise_group = p.add_argument_group("AWGN Channel")
+    noise_level = noise_group.add_mutually_exclusive_group()
+    noise_level.add_argument("--snr-db", type=float,
+                             help="Inject AWGN with this target SNR (dB) referenced to TX RRC power.")
+    noise_level.add_argument("--noise-std", type=float,
+                             help="Inject AWGN using this per-dimension σ (same units as DAC samples).")
+    noise_group.add_argument("--noise-seed", type=int, default=0,
+                             help="Noise RNG seed (default: 0).")
     
     args = p.parse_args(argv)
     
@@ -702,71 +896,34 @@ def main(argv: Optional[list] = None) -> int:
         # Filter
         qpsk_i_rrc, qpsk_q_rrc = rrc_filter(qpsk_i_up_padded, qpsk_q_up_padded)
         
+        # Channel + AWGN
+        qpsk_i_channel, qpsk_q_channel, noise_metrics = add_awgn(
+            qpsk_i_rrc,
+            qpsk_q_rrc,
+            snr_db=args.snr_db,
+            noise_std=args.noise_std,
+            seed=args.noise_seed,
+        )
+
         print("\nGenerating figures...")
-        
-        # Generate all figures
-        figures = []
-        figure_names = []
-        
-        if not args.skip_decoder:
-            print("  [7/7] Decoder Path...")
-            fig7 = create_decoder_figure(diff_encoded, iq, 
-                                         qpsk_i_rrc, qpsk_q_rrc, args)
-            figures.append(fig7)
-            figure_names.append("7_decoder")
-        
-        # RRC figure - always enabled
-        print("  [6/7] RRC Pulse Shaping...")
-        fig6 = create_rrc_figure(qpsk_i, qpsk_q, qpsk_i_rrc, qpsk_q_rrc)
-        figures.append(fig6)
-        figure_names.append("6_rrc")
-        
-        print("  [5/7] QPSK Modulation...")
-        fig5 = create_qpsk_figure(diff_encoded, iq, qpsk_i, qpsk_q, args)
-        figures.append(fig5)
-        figure_names.append("5_qpsk")
-        
-        print("  [4/7] Differential Encoding...")
-        fig4 = create_diff_encoder_figure(convolved, diff_encoded)
-        figures.append(fig4)
-        figure_names.append("4_diff_encoder")
-        
-        print("  [3/7] Convolutional Encoding...")
-        fig3 = create_conv_encoder_figure(scrambled, convolved)
-        figures.append(fig3)
-        figure_names.append("3_conv_encoder")
-        
-        print("  [2/7] Scrambling...")
-        fig2 = create_scrambler_figure(interleaved, scrambled, rs_out, args)
-        figures.append(fig2)
-        figure_names.append("2_scrambler")
-        
-        print("  [1/7] RS & Interleaving...")
-        fig1 = create_rs_interleaver_figure(data_padded, rs_out, interleaved, args)
-        figures.append(fig1)
-        figure_names.append("1_rs_interleaver")
-        
-        # Save or show
-        if args.save:
-            print(f"\nSaving figures with prefix '{args.save}'...")
-            for fig, name in zip(figures, figure_names):
-                filename = f"{args.save}_{name}.png"
-                fig.savefig(filename, dpi=args.dpi, bbox_inches='tight')
-                print(f"  Saved: {filename}")
-            print("All figures saved successfully!")
-            
-            # Close all figures
-            for fig in figures:
-                plt.close(fig)
-        else:
-            print("\nDisplaying figures interactively...")
-            print("Close each figure window to see the next one.")
-            for idx, (fig, name) in enumerate(zip(figures, figure_names), 1):
-                print(f"  Showing figure {idx}/{len(figures)}: {name}")
-                plt.show()
-                plt.close(fig)
-        
-        print("\n[OK] Visualization complete!")
+        setattr(args, "save_figs", args.save)
+        generate_visualizations(
+            data_padded,
+            rs_out,
+            interleaved,
+            scrambled,
+            convolved,
+            diff_encoded,
+            iq,
+            qpsk_i,
+            qpsk_q,
+            qpsk_i_rrc,
+            qpsk_q_rrc,
+            qpsk_i_channel,
+            qpsk_q_channel,
+            noise_metrics,
+            args,
+        )
         
     except Exception as e:
         print(f"\nError creating visualizations: {e}", file=sys.stderr)
@@ -777,74 +934,133 @@ def main(argv: Optional[list] = None) -> int:
     return 0
 
 
-def generate_visualizations(data_padded: bytes, rs_out: bytes, interleaved: bytes,
-                           scrambled: bytes, convolved: bytes, diff_encoded: bytes,
-                           iq: np.ndarray, qpsk_i: np.ndarray,
-                           qpsk_q: np.ndarray, qpsk_i_rrc: np.ndarray,
-                           qpsk_q_rrc: np.ndarray, args: argparse.Namespace):
-    """Generate visualization figures for the pipeline stages"""
+def generate_visualizations(
+    data_padded: bytes,
+    rs_out: bytes,
+    interleaved: bytes,
+    scrambled: bytes,
+    convolved: bytes,
+    diff_encoded: bytes,
+    iq: np.ndarray,
+    qpsk_i: np.ndarray,
+    qpsk_q: np.ndarray,
+    qpsk_i_rrc: np.ndarray,
+    qpsk_q_rrc: np.ndarray,
+    qpsk_i_channel: Optional[np.ndarray] = None,
+    qpsk_q_channel: Optional[np.ndarray] = None,
+    noise_metrics: Optional[dict] = None,
+    args: Optional[argparse.Namespace] = None,
+):
+    """Generate visualization figures for the pipeline stages."""
     try:
+        if qpsk_i_channel is None or qpsk_q_channel is None:
+            qpsk_i_channel = qpsk_i_rrc
+            qpsk_q_channel = qpsk_q_rrc
+        if noise_metrics is None:
+            noise_metrics = {"enabled": False}
+
+        skip_decoder = bool(getattr(args, "skip_decoder", False))
+        dpi_value = getattr(args, "dpi", 150)
+        save_prefix = getattr(args, "save_figs", None)
+
+        total_stages = 7 if skip_decoder else 8
+        stage_counter = total_stages
+
         print("\nGenerating visualizations...")
-        figures = []
-        figure_names = []
-        
-        print("  [7/7] Decoder Path...")
-        fig7 = create_decoder_figure(diff_encoded, iq, qpsk_i_rrc, qpsk_q_rrc, args)
-        figures.append(fig7)
-        figure_names.append("7_decoder")
-        
-        print("  [6/7] RRC Pulse Shaping...")
-        fig6 = create_rrc_figure(qpsk_i, qpsk_q, qpsk_i_rrc, qpsk_q_rrc)
-        figures.append(fig6)
-        figure_names.append("6_rrc")
-        
-        print("  [5/7] QPSK Modulation...")
-        fig5 = create_qpsk_figure(diff_encoded, iq, qpsk_i, qpsk_q, args)
-        figures.append(fig5)
-        figure_names.append("5_qpsk")
-        
-        print("  [4/7] Differential Encoding...")
-        fig4 = create_diff_encoder_figure(convolved, diff_encoded)
-        figures.append(fig4)
-        figure_names.append("4_diff_encoder")
-        
-        print("  [3/7] Convolutional Encoding...")
-        fig3 = create_conv_encoder_figure(scrambled, convolved)
-        figures.append(fig3)
-        figure_names.append("3_conv_encoder")
-        
-        print("  [2/7] Scrambling...")
-        fig2 = create_scrambler_figure(interleaved, scrambled, rs_out, args)
-        figures.append(fig2)
-        figure_names.append("2_scrambler")
-        
-        print("  [1/7] RS & Interleaving...")
-        fig1 = create_rs_interleaver_figure(data_padded, rs_out, interleaved, args)
-        figures.append(fig1)
-        figure_names.append("1_rs_interleaver")
-        
+        figures: list[plt.Figure] = []
+        figure_names: list[str] = []
+
+        if not skip_decoder:
+            print(f"  [{stage_counter}/{total_stages}] Decoder Path...")
+            fig = create_decoder_figure(
+                diff_encoded,
+                iq,
+                qpsk_i_channel,
+                qpsk_q_channel,
+                args if args is not None else argparse.Namespace(),
+                noise_metrics=noise_metrics,
+            )
+            figures.append(fig)
+            figure_names.append(f"{stage_counter}_decoder")
+            stage_counter -= 1
+
+        print(f"  [{stage_counter}/{total_stages}] AWGN Channel...")
+        fig_channel = create_channel_figure(
+            qpsk_i_rrc,
+            qpsk_q_rrc,
+            qpsk_i_channel,
+            qpsk_q_channel,
+            iq,
+            noise_metrics,
+        )
+        figures.append(fig_channel)
+        figure_names.append(f"{stage_counter}_channel")
+        stage_counter -= 1
+
+        print(f"  [{stage_counter}/{total_stages}] RRC Pulse Shaping...")
+        fig_rrc = create_rrc_figure(
+            qpsk_i,
+            qpsk_q,
+            qpsk_i_rrc,
+            qpsk_q_rrc,
+            qpsk_i_channel,
+            qpsk_q_channel,
+        )
+        figures.append(fig_rrc)
+        figure_names.append(f"{stage_counter}_rrc")
+        stage_counter -= 1
+
+        print(f"  [{stage_counter}/{total_stages}] QPSK Modulation...")
+        fig_qpsk = create_qpsk_figure(diff_encoded, iq, qpsk_i, qpsk_q, args)
+        figures.append(fig_qpsk)
+        figure_names.append(f"{stage_counter}_qpsk")
+        stage_counter -= 1
+
+        print(f"  [{stage_counter}/{total_stages}] Differential Encoding...")
+        fig_diff = create_diff_encoder_figure(convolved, diff_encoded)
+        figures.append(fig_diff)
+        figure_names.append(f"{stage_counter}_diff_encoder")
+        stage_counter -= 1
+
+        print(f"  [{stage_counter}/{total_stages}] Convolutional Encoding...")
+        fig_conv = create_conv_encoder_figure(scrambled, convolved)
+        figures.append(fig_conv)
+        figure_names.append(f"{stage_counter}_conv_encoder")
+        stage_counter -= 1
+
+        print(f"  [{stage_counter}/{total_stages}] Scrambling...")
+        fig_scrambler = create_scrambler_figure(interleaved, scrambled, rs_out, args)
+        figures.append(fig_scrambler)
+        figure_names.append(f"{stage_counter}_scrambler")
+        stage_counter -= 1
+
+        print(f"  [{stage_counter}/{total_stages}] RS & Interleaving...")
+        fig_rs = create_rs_interleaver_figure(data_padded, rs_out, interleaved, args)
+        figures.append(fig_rs)
+        figure_names.append(f"{stage_counter}_rs_interleaver")
+
         # Save or display
-        if hasattr(args, 'save_figs') and args.save_figs:
-            print(f"\nSaving figures with prefix '{args.save_figs}'...")
+        if save_prefix:
+            print(f"\nSaving figures with prefix '{save_prefix}'...")
             for fig, name in zip(figures, figure_names):
-                filename = f"{args.save_figs}_{name}.png"
-                fig.savefig(filename, dpi=150, bbox_inches='tight')
+                filename = f"{save_prefix}_{name}.png"
+                fig.savefig(filename, dpi=dpi_value, bbox_inches="tight")
                 print(f"  Saved: {filename}")
             print("All figures saved successfully!")
-            
-            # Close all figures
+
             for fig in figures:
                 plt.close(fig)
         else:
             print("\nDisplaying figures interactively...")
             print("Close each figure window to see the next one.")
             for idx, (fig, name) in enumerate(zip(figures, figure_names), 1):
-                print(f"  Showing stage {name[0]}/7: {name[2:]}")
+                stage_no = name.split("_")[0]
+                print(f"  Showing stage {stage_no}/{total_stages}: {name.split('_', 1)[1]}")
                 plt.show()
                 plt.close(fig)
-        
+
         print("\nVisualization complete!")
-        
+
     except ImportError as e:
         print(f"\nWarning: Visualization unavailable - {e}", file=sys.stderr)
         print("Install matplotlib and scipy to enable visualizations.", file=sys.stderr)
