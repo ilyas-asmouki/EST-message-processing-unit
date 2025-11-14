@@ -1,2 +1,7 @@
 mpu/venv/
 mpu/model/__pycache__
+build/
+mpu/hdl/sim/*/work*/
+mpu/hdl/sim/*/transcript
+*.jou
+*.log

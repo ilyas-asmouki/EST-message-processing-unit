@@ -1,0 +1,10 @@
+{
+  "input_len": 510,
+  "padded_len": 669,
+  "depth": 2,
+  "scrambler_enabled": true,
+  "seed": 93,
+  "stages": [
+    "interleaver"
+  ]
+}
