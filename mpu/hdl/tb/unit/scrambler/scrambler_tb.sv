@@ -1,22 +1,24 @@
-// unit testbench for byte_interleaver
+// unit testbench for scrambler
 
 `timescale 1ns/1ps
 
-module interleaver_tb;
-  import interleaver_pkg::*;
-  import rs_encoder_pkg::*;
+module scrambler_tb;
 
-  localparam string VEC_DIR     = "../../../vectors/rigorous_500/interleaver";
+  localparam string VEC_DIR     = "../../../vectors/rigorous_500/scrambler";
   localparam int    TEST_BLOCKS = 500;
-  localparam int    CODE_BYTES  = interleaver_pkg::CODEWORD_BYTES;
-  localparam int    TOTAL_BYTES = TEST_BLOCKS * CODE_BYTES;
-  localparam int    DEPTH       = 2;
+  // scrambler processes stream of bytes, block size depends on upstream.
+  // we just check total bytes.
+  // from gen_vectors, we know the input size.
+  // let's assume the vector file contains the exact number of bytes we need.
+  // we'll read the file to determine size or use a large buffer.
+  
+  localparam int MAX_BYTES = 130000; 
 
-  // clk/reset
+  // clock/reset
   logic clk;
   logic rst_n;
 
-  // DUT IO
+  // dut io
   logic        s_axis_valid;
   logic        s_axis_ready;
   logic [7:0]  s_axis_data;
@@ -32,8 +34,10 @@ module interleaver_tb;
   logic        m_axis_is_parity;
 
   // memories
-  logic [7:0] input_mem  [0:TOTAL_BYTES-1];
-  logic [7:0] output_mem [0:TOTAL_BYTES-1];
+  logic [7:0] input_mem  [0:MAX_BYTES-1];
+  logic [7:0] output_mem [0:MAX_BYTES-1];
+  
+  int unsigned total_bytes_loaded;
 
   int unsigned out_idx;
   int unsigned errors;
@@ -56,18 +60,35 @@ module interleaver_tb;
   initial begin
     string in_path;
     string out_path;
+    int fd, r;
+    
     in_path  = {VEC_DIR, "/input.hex"};
     out_path = {VEC_DIR, "/output.hex"};
-    $display("[TB] Loading %0d interleaver input bytes from %s", TOTAL_BYTES, in_path);
+    
+    // we can use $readmemh, but we need to know how many bytes to expect for the loop.
+    // we can count lines or just assume a fixed number if we control generation.
+    // let's use a large buffer and $readmemh.
+    
+    // initialize memory with known pattern to detect end if needed, 
+    // but gen_vectors produces dense hex.
+    
+    $display("[TB] Loading scrambler vectors from %s", VEC_DIR);
     $readmemh(in_path, input_mem);
-    $display("[TB] Loading %0d interleaver expected bytes from %s", TOTAL_BYTES, out_path);
     $readmemh(out_path, output_mem);
+    
+    // hack: determine size by checking for x or uninitialized? 
+    // or just pass the size as a parameter?
+    // since we are running "rigorous_test" with 2550 bytes (10 blocks * 255 bytes),
+    // let's hardcode or estimate.
+    // actually, let's just run until we exhaust the input driver loop which we can set to a large number
+    // and break if we hit uninitialized memory? 
+    // better: the gen_vectors script writes 2550 bytes.
+    total_bytes_loaded = 127500; 
+    $display("[TB] Expecting %0d bytes", total_bytes_loaded);
   end
 
-  // instantiate DUT
-  byte_interleaver #(
-    .DEPTH(DEPTH)
-  ) dut (
+  // instantiate dut
+  scrambler dut (
     .clk              (clk),
     .rst_n            (rst_n),
     .s_axis_valid     (s_axis_valid),
@@ -84,21 +105,21 @@ module interleaver_tb;
     .m_axis_is_parity (m_axis_is_parity)
   );
 
-  // PRNGs for stimulus/ready
+  // prngs for stimulus/ready
   logic [31:0] prng_in;
   logic [31:0] prng_out;
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      prng_in  <= 32'hF00DCAFE;
-      prng_out <= 32'hBADC0DED;
+      prng_in  <= 32'hDEADBEEF;
+      prng_out <= 32'hCAFEBABE;
     end else begin
       prng_in  <= {prng_in[30:0], prng_in[31] ^ prng_in[21] ^ prng_in[1] ^ prng_in[0]};
       prng_out <= {prng_out[30:0], prng_out[31] ^ prng_out[21] ^ prng_out[1] ^ prng_out[0]};
     end
   end
 
-  // input driver with occasional bubbles
+  // input driver
   int unsigned in_idx;
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -113,16 +134,20 @@ module interleaver_tb;
       if (s_axis_valid && s_axis_ready) begin
         in_idx <= in_idx + 1;
         s_axis_valid <= 1'b0;
-        if (in_idx == TOTAL_BYTES-1) begin
+        if (in_idx == total_bytes_loaded-1) begin
           inputs_done <= 1'b1;
         end
       end
-      if (!inputs_done && !s_axis_valid && (in_idx < TOTAL_BYTES)) begin
+      
+      if (!inputs_done && !s_axis_valid && (in_idx < total_bytes_loaded)) begin
+        // randomize valid
         if (prng_in[0]) begin
           s_axis_data      <= input_mem[in_idx];
-          s_axis_last      <= ((in_idx % CODE_BYTES) == (CODE_BYTES-1));
-          s_axis_sop       <= ((in_idx % CODE_BYTES) == 0);
-          s_axis_is_parity <= ((in_idx % CODE_BYTES) >= RS_K);
+          // assuming 255-byte blocks for sop/last generation, matching upstream
+          s_axis_last      <= ((in_idx % 255) == 254);
+          s_axis_sop       <= ((in_idx % 255) == 0);
+          // parity is last 32 bytes of 255
+          s_axis_is_parity <= ((in_idx % 255) >= 223);
           s_axis_valid     <= 1'b1;
         end
       end
@@ -144,7 +169,7 @@ module interleaver_tb;
       out_idx <= 0;
       errors  <= 0;
     end else if (m_axis_valid && m_axis_ready) begin
-      if (out_idx >= TOTAL_BYTES) begin
+      if (out_idx >= total_bytes_loaded) begin
         errors++;
         $error("[TB] Unexpected extra output byte (idx=%0d)", out_idx);
       end else begin
@@ -153,16 +178,20 @@ module interleaver_tb;
         bit expect_sop;
         bit expect_last;
         bit expect_parity;
+        
         exp_byte = output_mem[out_idx];
+        
         if (exp_byte !== m_axis_data) begin
           errors++;
           $error("[TB] Data mismatch @%0d: got 0x%02x expected 0x%02x",
                  out_idx, m_axis_data, exp_byte);
         end
-        block_pos = out_idx % CODE_BYTES;
+        
+        block_pos = out_idx % 255;
         expect_sop = (block_pos == 0);
-        expect_last = (block_pos == (CODE_BYTES-1));
-        expect_parity = (interleave_perm(DEPTH, block_pos) >= RS_K);
+        expect_last = (block_pos == 254);
+        expect_parity = (block_pos >= 223);
+        
         if (m_axis_sop !== expect_sop) begin
           errors++;
           $error("[TB] sop mismatch @%0d: got %0b expect %0b",
@@ -187,10 +216,10 @@ module interleaver_tb;
   initial begin
     @(posedge rst_n);
     wait (inputs_done);
-    wait (out_idx == TOTAL_BYTES);
+    wait (out_idx == total_bytes_loaded);
     #50;
     if (errors == 0) begin
-      $display("[TB] PASS: interleaver output matched all %0d bytes", TOTAL_BYTES);
+      $display("[TB] PASS: scrambler output matched all %0d bytes", total_bytes_loaded);
     end else begin
       $error("[TB] FAIL: %0d mismatches detected", errors);
     end

@@ -1,9 +1,8 @@
-// SPDX-License-Identifier: MIT
-// Module: rs_encoder
+// module: rs_encoder
 //
-// Streaming systematic RS(255,223) encoder. Accepts one byte per cycle using a
+// streaming systematic RS(255,223) encoder. accepts one byte per cycle using a
 // ready/valid handshake, forwards data immediately, and appends 32 parity bytes
-// using the same GF(2^8) arithmetic as the python golden model.
+// using the same GF(2^8) arithmetic as the python golden model
 
 `timescale 1ns/1ps
 
@@ -14,13 +13,13 @@ module rs_encoder #(
   input  logic clk,
   input  logic rst_n,
 
-  // Data input stream (223 data bytes per block)
+  // data input stream (223 data bytes per block)
   input  logic        s_axis_valid,
   output logic        s_axis_ready,
   input  logic [7:0]  s_axis_data,
   input  logic        s_axis_last,   // assert with the final data byte of a block
 
-  // Codeword output stream (223 data bytes + 32 parity bytes)
+  // codeword output stream (223 data bytes + 32 parity bytes)
   output logic        m_axis_valid,
   input  logic        m_axis_ready,
   output logic [7:0]  m_axis_data,
@@ -45,9 +44,7 @@ module rs_encoder #(
   logic accept_byte;
   logic parity_advance;
 
-  // ------------------------------------------------------------
-  // Handshake routing (pass data through during ST_DATA)
-  // ------------------------------------------------------------
+  // handshake routing (pass data through during ST_DATA)
   assign m_axis_valid     = (state_q == ST_PARITY) ? 1'b1 : s_axis_valid;
   assign m_axis_data      = (state_q == ST_PARITY) ? parity_q[parity_idx_q] : s_axis_data;
   assign m_axis_last      = (state_q == ST_PARITY) ? (parity_idx_q == (PARITY_BYTES-1)) : 1'b0;
@@ -59,9 +56,7 @@ module rs_encoder #(
   assign accept_byte   = (state_q != ST_PARITY) && s_axis_valid && s_axis_ready;
   assign parity_advance = (state_q == ST_PARITY) && m_axis_valid && m_axis_ready;
 
-  // ------------------------------------------------------------
-  // Parity LFSR (mirrors python implementation)
-  // ------------------------------------------------------------
+  // parity lfsr (mirrors python implementation)
   always_comb begin
     for (int i = 0; i < PARITY_BYTES; i++) begin
       parity_d[i] = parity_q[i];
@@ -80,9 +75,7 @@ module rs_encoder #(
     end
   end
 
-  // ------------------------------------------------------------
-  // Control FSM
-  // ------------------------------------------------------------
+  // control FSM
   always_comb begin
     state_d      = state_q;
     data_cnt_d   = data_cnt_q;
@@ -123,9 +116,7 @@ module rs_encoder #(
     endcase
   end
 
-  // ------------------------------------------------------------
-  // Sequential storage
-  // ------------------------------------------------------------
+  // sequential storage
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       state_q      <= ST_IDLE;
@@ -144,9 +135,7 @@ module rs_encoder #(
     end
   end
 
-  // ------------------------------------------------------------
-  // Assertions (simple immediate checks for sim-only use)
-  // ------------------------------------------------------------
+  // assertions (simple immediate checks for sim-only use)
 `ifdef ASSERT_ON
   always @(posedge clk) begin
     if (rst_n) begin

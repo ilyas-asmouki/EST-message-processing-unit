@@ -1,12 +1,11 @@
-// SPDX-License-Identifier: MIT
-// Package: Reed–Solomon encoder helpers/parameters
+// package: reed-solomon encoder helpers/parameters
 //
-// Captures the GF(2^8) constants shared by the RTL/TBs so that the HDL
-// implementation stays aligned with the Python golden model.
+// captures the GF(2^8) constants shared by the RTL/TBs so that the HDL
+// implementation stays aligned with the python golden model
 
 package rs_encoder_pkg;
 
-  // -------- Reed–Solomon code parameters (RS(255,223)) --------
+  // reed–solomon code parameters (RS(255,223))
   localparam int RS_SYM_BITS      = 8;
   localparam int RS_N             = 255;
   localparam int RS_K             = 223;
@@ -15,8 +14,8 @@ package rs_encoder_pkg;
 
   typedef logic [RS_SYM_BITS-1:0] rs_byte_t;
 
-  // Helper that returns generator coefficients re-ordered for the LFSR.
-  // idx corresponds to _GEN[RS_PARITY_BYTES-1-idx] in the python model.
+  // helper that returns generator coefficients re-ordered for the LFSR
+  // idx corresponds to _GEN[RS_PARITY_BYTES-1-idx] in the python model
   function automatic rs_byte_t rs_gen_coeff (input int idx);
     unique case (idx)
       0:  return 8'd149;
@@ -55,8 +54,8 @@ package rs_encoder_pkg;
     endcase
   endfunction
 
-  // GF(2^8) multiply using the primitive polynomial above. This mirrors the
-  // helper used in the python model and is synthesizable (pure combinational).
+  // GF(2^8) multiply using the primitive polynomial above. this mirrors the
+  // helper used in the python model and is synthesizable (pure combinational)
   function automatic rs_byte_t gf_mul(rs_byte_t a, rs_byte_t b);
     rs_byte_t product;
     rs_byte_t aa;

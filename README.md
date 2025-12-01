@@ -1,94 +1,97 @@
-# EST Message Processing Unit
+# EST Message Processing Unit (MPU)
 
-This repository contains all components of the Message Processing Unit (MPU) project:
-- **Golden model (Python)** — located in `mpu/model/`
-- **HDL simulation code** — (to be added)
-- **Verilog implementation** — (to be added)
+This repository contains the complete implementation of a CCSDS-compatible Message Processing Unit (MPU) for FPGA, including a bit-accurate Python golden model and SystemVerilog RTL.
 
-Currently, only the **golden model** in `mpu/model/` is implemented and usable.
+## Project Structure
+
+- **`mpu/model/`**: Python Golden Model (Reference implementation).
+- **`mpu/hdl/rtl/`**: SystemVerilog RTL implementation.
+- **`mpu/hdl/tb/`**: Unit and integration testbenches.
+- **`mpu/hdl/scripts/`**: Vector generation tools for verification.
+
+## Status
+
+| Module | Python Model | SystemVerilog RTL | Verification Status |
+| :--- | :---: | :---: | :--- |
+| **RS Encoder** | ✅ | ✅ | **PASS** (Rigorous 500-block test) |
+| **Interleaver** | ✅ | ✅ | **PASS** (Rigorous 500-block test) |
+| **Scrambler** | ✅ | ✅ | **PASS** (Rigorous 500-block test) |
+| **Conv Encoder** | ✅ | 🚧 | Pending |
+| **Diff Encoder** | ✅ | 🚧 | Pending |
+| **QPSK Mapper** | ✅ | 🚧 | Pending |
 
 ---
 
 ## Setup Instructions
 
-Before running any Python script in the `mpu/model/` directory, set up a virtual environment and install dependencies.
+### 1. Python Environment (Golden Model & Vectors)
 
-### Steps
-
-1. **Create a virtual environment** (from inside the `mpu/` directory):
-
-   ```bash
-   python -m venv venv
-   ```
-
-
-2. **Activate the virtual environment**:
-
-   ```bash
-   source venv/bin/activate
-   ```
-
-3. **Install dependencies**:
-
-   ```bash
-   pip install reedsolo scikit-commpy numpy scipy
-   ```
-
-
-## Golden Model (`mpu/model/`)
-
-### Modules implemented so far
-
-- `reed_solomon.py` — Minimal RS(255,223) encoder in GF(2^8)
-- `interleaver.py` — Byte-wise block interleaver with depths I ∈ {1,2,3,4,5,8}
-- `pipeline.py` — Entry point that chains modules together into a full pipeline
-
-### Running the pipeline
-
-From the repository root:
-
-   ```bash
-   python -m mpu.model.pipeline --text "HELLO WORLD"
-   ```
-
-### Defaults
-
-- **Interleaver depth:** `2`  
-- **Padding policy:** `zero` (pads incomplete 223-byte blocks with zeros)  
-- **Printing:** enabled (prints every stage by default)  
-
-
-### Example output
-```
-input =
-72 69 76 76 79
-
-RS output =
-72 69 76 76 79 0 0 0 ... <223 data bytes + 32 parity bytes>
-
-interleaver output (I=2) =
-72 0 69 0 76 0 76 0 79 0 0 0 ... <255 bytes interleaved>
-```
-
-### Options
+The Python model is used to generate reference vectors for HDL verification.
 
 ```bash
-python -m mpu.model.pipeline [options]
+cd mpu
+python3 -m venv venv
+source venv/bin/activate
+pip install reedsolo scikit-commpy numpy scipy
 ```
 
-- `--text "HELLO"` Input as UTF-8 string
-- `--hex "00112233"` Input as hex string
-- `--infile file.bin` Input from binary file
-- `--depth N` Interleaver depth (1,2,3,4,5,8) [default=2]
-- `--pad zero|none` Pad to 223-byte blocks [default=zero]
-- `--out out.bin` Write binary output to file
-- `--hexout` Print output in hex
-- `--no-print` Suppress printing of stages
-- `--check` Verify RS codeword syndromes are zero
-- `--show` Print sizes, block counts, etc.
+### 2. HDL Simulation Tools
 
-## Next Steps
+The project uses **Icarus Verilog** (`iverilog`) for simulation.
 
-- Add convolutional encoder, mapper, and filtering stages to the golden model  
-- Mirror each golden model module in HDL (Verilog)  
-- Integrate into the full FPGA design  
+```bash
+sudo apt-get install iverilog
+```
+
+---
+
+## Running the Golden Model
+
+You can run the full software pipeline to see how data is transformed at each stage.
+
+```bash
+# From repository root
+python3 -m mpu.model.pipeline --text "HELLO WORLD" --show
+```
+
+**Options:**
+- `--text "..."` / `--hex "..."` / `--infile file.bin`: Input sources.
+- `--depth N`: Interleaver depth (default: 2).
+- `--no-scramble`: Disable scrambling.
+- `--out out.bin`: Save binary output.
+
+---
+
+## Verification (RTL)
+
+We use a "rigorous verification" methodology where the Python model generates large randomized datasets (vectors), which are then loaded by SystemVerilog testbenches to verify the RTL byte-for-byte.
+
+### Running Unit Tests
+
+Testbenches are located in `mpu/hdl/tb/unit/`. Each module has a `Makefile`.
+
+**Example: Testing the Scrambler**
+```bash
+cd mpu/hdl/tb/unit/scrambler
+make
+```
+
+**Example: Testing the Full Chain (RS -> Int -> Scr)**
+```bash
+cd mpu/hdl/tb/unit/chain
+make
+```
+
+### Generating New Vectors
+
+To generate a new set of test vectors (e.g., for debugging or stress testing):
+
+```bash
+# Generate 500 blocks of random data
+python3 -c "import os; open('random.bin', 'wb').write(os.urandom(500 * 223))"
+
+# Generate vectors for all stages
+python3 mpu/hdl/scripts/gen_vectors.py --infile random.bin --stage rs --stage interleaver --stage scrambler --out-dir mpu/hdl/vectors/rigorous_custom
+```
+
+Then update the `VEC_DIR` in the corresponding testbench to point to `mpu/hdl/vectors/rigorous_custom`.

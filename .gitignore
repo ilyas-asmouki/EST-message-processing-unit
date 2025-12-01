@@ -1,7 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
 mpu/venv/
-mpu/model/__pycache__
+.venv/
+env/
+
+# HDL / Simulation
 build/
+*.vvp
+*.vcd
+*.log
+transcript
+work/
 mpu/hdl/sim/*/work*/
 mpu/hdl/sim/*/transcript
 *.jou
-*.log
+
+# Generated Vectors (Keep smoke tests, ignore large rigorous ones)
+mpu/hdl/vectors/rigorous_*/
+mpu/hdl/vectors/random_*/
+
+# IDEs / Editors
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# OS
+Thumbs.db

@@ -1,13 +1,12 @@
-// SPDX-License-Identifier: MIT
-// Unit testbench for rs_encoder
+// unit testbench for rs_encoder
 
 `timescale 1ns/1ps
 
 module rs_encoder_tb;
   import rs_encoder_pkg::*;
 
-  localparam string VEC_DIR    = "../../../vectors/rs_smoke/rs";
-  localparam int    TEST_BLOCKS = 2;
+  localparam string VEC_DIR    = "../../../vectors/rigorous_500/rs";
+  localparam int    TEST_BLOCKS = 500;
   localparam int    IN_BYTES   = TEST_BLOCKS * RS_K;
   localparam int    OUT_BYTES  = TEST_BLOCKS * (RS_K + RS_PARITY_BYTES);
 
@@ -77,7 +76,7 @@ module rs_encoder_tb;
     .m_axis_is_parity (m_axis_is_parity)
   );
 
-  // Input driver
+  // input driver
   initial begin
     s_axis_valid = 1'b0;
     s_axis_data  = '0;
@@ -98,7 +97,7 @@ module rs_encoder_tb;
     inputs_consumed  <= 1'b1;
   end
 
-  // Ready generator w/ deterministic pseudo-random stalls
+  // ready generator w/ deterministic pseudo-random stalls
   logic [31:0] prng_q;
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -110,7 +109,7 @@ module rs_encoder_tb;
     end
   end
 
-  // Scoreboard
+  // scoreboard
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       out_idx <= 0;
@@ -154,7 +153,7 @@ module rs_encoder_tb;
     end
   end
 
-  // Finish condition
+  // finish condition
   initial begin
     @(posedge rst_n);
     wait (inputs_consumed);

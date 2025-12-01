@@ -1,5 +1,4 @@
-// SPDX-License-Identifier: MIT
-// Package: RS interleaver helpers (depth validation + permutation logic).
+// package: RS interleaver helpers (depth validation + permutation logic)
 
 package interleaver_pkg;
 
@@ -12,8 +11,8 @@ package interleaver_pkg;
     endcase
   endfunction
 
-  // Return the original byte index that produces output position 'idx' for
-  // the requested interleaver depth.
+  // return the original byte index that produces output position 'idx' for
+  // the requested interleaver depth
   function automatic int unsigned interleave_perm(input int depth, input int idx);
     int rows;
     int total;

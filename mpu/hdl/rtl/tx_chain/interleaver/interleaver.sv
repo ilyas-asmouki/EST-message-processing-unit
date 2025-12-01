@@ -1,9 +1,8 @@
-// SPDX-License-Identifier: MIT
-// Module: byte_interleaver
+// module: byte_interleaver
 //
-// Block interleaver that re-orders each 255-byte RS codeword according to the
-// configured depth (I ∈ {1,2,3,4,5,8}). It buffers complete codewords using a
-// ping-pong scheme so upstream/downstream stages can run concurrently.
+// block interleaver that re-orders each 255-byte RS codeword according to the
+// configured depth (I ∈ {1,2,3,4,5,8}). it buffers complete codewords using a
+// ping-pong scheme so upstream/downstream stages can run concurrently
 
 `timescale 1ns/1ps
 
@@ -34,38 +33,34 @@ module byte_interleaver #(
   localparam int WORDS_PER_BLOCK = CODEWORD_BYTES;
   typedef enum logic {BUF0 = 1'b0, BUF1 = 1'b1} buf_sel_e;
 
-  // Storage for two ping-pong buffers
+  // storage for two ping-pong buffers
   logic [7:0] data_mem   [2][0:WORDS_PER_BLOCK-1];
   logic       parity_mem [2][0:WORDS_PER_BLOCK-1];
 
-  // Loader bookkeeping
+  // loader bookkeeping
   logic        load_active_q, load_active_d;
   buf_sel_e    load_sel_q, load_sel_d;
   logic [8:0]  load_idx_q, load_idx_d;
 
-  // Sender bookkeeping
+  // sender bookkeeping
   logic        send_active_q, send_active_d;
   buf_sel_e    send_sel_q, send_sel_d;
   logic [8:0]  send_idx_q, send_idx_d;
 
-  // Ready flags for completed buffers
+  // ready flags for completed buffers
   logic [1:0] buf_ready_q, buf_ready_d;
 
   logic input_fire;
   logic output_fire;
 
-  // --------------------------------------------------------------------------
-  // Parameter guard
-  // --------------------------------------------------------------------------
+  // oarameter guard
   initial begin
     if (!depth_supported(DEPTH)) begin
       $error("byte_interleaver: unsupported DEPTH=%0d (allowed: 1,2,3,4,5,8)", DEPTH);
     end
   end
 
-  // --------------------------------------------------------------------------
-  // Input/Output handshakes
-  // --------------------------------------------------------------------------
+  // io handshakes
   assign s_axis_ready = load_active_q;
   assign m_axis_valid = send_active_q;
   assign m_axis_sop   = send_active_q && (send_idx_q == 0);
@@ -74,9 +69,7 @@ module byte_interleaver #(
   assign input_fire  = s_axis_valid && s_axis_ready;
   assign output_fire = m_axis_valid && m_axis_ready;
 
-  // --------------------------------------------------------------------------
-  // Combinational control: producer/consumer state machines
-  // --------------------------------------------------------------------------
+  // combinatorial control: producer/consumer state machines
   always_comb begin
     load_active_d = load_active_q;
     load_sel_d    = load_sel_q;
@@ -88,7 +81,7 @@ module byte_interleaver #(
 
     buf_ready_d   = buf_ready_q;
 
-    // Advance sender if currently streaming
+    // advance sender if currently streaming
     if (send_active_q && output_fire) begin
       if (send_idx_q == WORDS_PER_BLOCK-1) begin
         send_active_d = 1'b0;
@@ -98,7 +91,7 @@ module byte_interleaver #(
       end
     end
 
-    // Consume input bytes into current load buffer
+    // consume input bytes into current load buffer
     if (load_active_q && input_fire) begin
       load_idx_d = load_idx_q + 1;
       if (s_axis_last) begin
@@ -108,7 +101,7 @@ module byte_interleaver #(
       end
     end
 
-    // Start sending if idle and a buffer is ready
+    // start sending if idle and a buffer is ready
     if (!send_active_d) begin
       if (buf_ready_d[BUF0]) begin
         send_active_d    = 1'b1;
@@ -123,7 +116,7 @@ module byte_interleaver #(
       end
     end
 
-    // Assign a buffer for loading when idle
+    // assign a buffer for loading when idle
     if (!load_active_d) begin
       if (!buf_ready_d[BUF0] && !(send_active_d && (send_sel_d == BUF0))) begin
         load_active_d = 1'b1;
@@ -137,9 +130,7 @@ module byte_interleaver #(
     end
   end
 
-  // --------------------------------------------------------------------------
-  // Sequential updates
-  // --------------------------------------------------------------------------
+  // sequential updates
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       load_active_q <= 1'b1;
@@ -160,9 +151,7 @@ module byte_interleaver #(
     end
   end
 
-  // --------------------------------------------------------------------------
-  // Data storage
-  // --------------------------------------------------------------------------
+  // data storage
   always_ff @(posedge clk) begin
     if (load_active_q && input_fire) begin
       data_mem[load_sel_q][load_idx_q]   <= s_axis_data;
@@ -170,9 +159,7 @@ module byte_interleaver #(
     end
   end
 
-  // --------------------------------------------------------------------------
-  // Output selection
-  // --------------------------------------------------------------------------
+  // output selection
   logic [7:0] data_word;
   logic       parity_word;
 
@@ -190,9 +177,7 @@ module byte_interleaver #(
   assign m_axis_data      = data_word;
   assign m_axis_is_parity = parity_word;
 
-  // --------------------------------------------------------------------------
-  // Simple assertions
-  // --------------------------------------------------------------------------
+  // simple assertions
 `ifdef ASSERT_ON
   always @(posedge clk) begin
     if (rst_n && load_active_q && input_fire) begin
