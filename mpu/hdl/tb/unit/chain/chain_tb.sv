@@ -9,13 +9,14 @@ module chain_tb;
 
   // Use the same rigorous vectors
   localparam string RS_VEC_DIR    = "../../../vectors/rigorous_500/rs";
-  localparam string SCR_VEC_DIR   = "../../../vectors/rigorous_500/scrambler";
+  localparam string CONV_VEC_DIR  = "../../../vectors/rigorous_500/conv";
   
   localparam int    TEST_BLOCKS   = 500;
   localparam int    RS_IN_BYTES   = TEST_BLOCKS * RS_K;
-  localparam int    FINAL_BYTES   = TEST_BLOCKS * (RS_K + RS_PARITY_BYTES); // Interleaver/Scrambler don't change size
+  localparam int    FINAL_BYTES   = TEST_BLOCKS * 512; // Conv encoder expands 255 -> 512
   
-  localparam int    MAX_BYTES     = 130000;
+  localparam int    MAX_IN_BYTES  = 130000;
+  localparam int    MAX_OUT_BYTES = 260000;
 
   // Clock/reset
   logic clk;
@@ -51,9 +52,17 @@ module chain_tb;
   logic        scr_m_sop;
   logic        scr_m_is_parity;
 
+  // --- Conv Encoder Outputs ---
+  logic        conv_m_valid;
+  logic        conv_m_ready;
+  logic [7:0]  conv_m_data;
+  logic        conv_m_last;
+  logic        conv_m_sop;
+  logic        conv_m_is_parity;
+
   // Memories
-  logic [7:0] input_mem  [0:MAX_BYTES-1];
-  logic [7:0] output_mem [0:MAX_BYTES-1];
+  logic [7:0] input_mem  [0:MAX_IN_BYTES-1];
+  logic [7:0] output_mem [0:MAX_OUT_BYTES-1];
 
   int unsigned out_idx;
   int unsigned errors;
@@ -78,12 +87,12 @@ module chain_tb;
     string out_path;
     
     in_path  = {RS_VEC_DIR, "/input.hex"};
-    out_path = {SCR_VEC_DIR, "/output.hex"};
+    out_path = {CONV_VEC_DIR, "/output.hex"};
     
     $display("[TB] Loading Chain Input (RS) from %s", in_path);
     $readmemh(in_path, input_mem);
     
-    $display("[TB] Loading Chain Output (Scrambler) from %s", out_path);
+    $display("[TB] Loading Chain Output (Conv) from %s", out_path);
     $readmemh(out_path, output_mem);
     
     $display("[TB] Expecting %0d output bytes", FINAL_BYTES);
@@ -149,6 +158,25 @@ module chain_tb;
     .m_axis_is_parity (scr_m_is_parity)
   );
 
+  // 4. Conv Encoder
+  // Connect Scrambler output to Conv Encoder input
+  conv_encoder conv_inst (
+    .clk              (clk),
+    .rst_n            (rst_n),
+    .s_axis_valid     (scr_m_valid),
+    .s_axis_ready     (scr_m_ready),
+    .s_axis_data      (scr_m_data),
+    .s_axis_last      (scr_m_last),
+    .s_axis_sop       (scr_m_sop),
+    .s_axis_is_parity (scr_m_is_parity),
+    .m_axis_valid     (conv_m_valid),
+    .m_axis_ready     (conv_m_ready),
+    .m_axis_data      (conv_m_data),
+    .m_axis_last      (conv_m_last),
+    .m_axis_sop       (conv_m_sop),
+    .m_axis_is_parity (conv_m_is_parity)
+  );
+
   // -------------------------------------------------------------------------
   // Stimulus & Checking
   // -------------------------------------------------------------------------
@@ -196,21 +224,21 @@ module chain_tb;
     end
   end
 
-  // Output Ready Generator (Backpressure on Scrambler)
+  // Output Ready Generator (Backpressure on Conv Encoder)
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      scr_m_ready <= 1'b0;
+      conv_m_ready <= 1'b0;
     end else begin
-      scr_m_ready <= (prng_out[2:0] != 3'b000); // ~87% ready
+      conv_m_ready <= (prng_out[2:0] != 3'b000); // ~87% ready
     end
   end
 
-  // Scoreboard (Checks Scrambler Output)
+  // Scoreboard (Checks Conv Output)
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       out_idx <= 0;
       errors  <= 0;
-    end else if (scr_m_valid && scr_m_ready) begin
+    end else if (conv_m_valid && conv_m_ready) begin
       if (out_idx >= FINAL_BYTES) begin
         errors++;
         $error("[TB] Unexpected extra output byte (idx=%0d)", out_idx);
@@ -218,10 +246,10 @@ module chain_tb;
         logic [7:0] exp_byte;
         exp_byte = output_mem[out_idx];
         
-        if (exp_byte !== scr_m_data) begin
+        if (exp_byte !== conv_m_data) begin
           errors++;
           $error("[TB] Data mismatch @%0d: got 0x%02x expected 0x%02x",
-                 out_idx, scr_m_data, exp_byte);
+                 out_idx, conv_m_data, exp_byte);
         end
       end
       out_idx <= out_idx + 1;
@@ -235,7 +263,7 @@ module chain_tb;
     wait (out_idx == FINAL_BYTES);
     #100;
     if (errors == 0) begin
-      $display("[TB] PASS: Chain (RS->Int->Scr) matched all %0d bytes", FINAL_BYTES);
+      $display("[TB] PASS: Chain (RS->Int->Scr->Conv) matched all %0d bytes", FINAL_BYTES);
     end else begin
       $error("[TB] FAIL: %0d mismatches detected in chain", errors);
     end

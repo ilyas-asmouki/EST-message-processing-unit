@@ -16,7 +16,7 @@ This repository contains the complete implementation of a CCSDS-compatible Messa
 | **RS Encoder** | ✅ | ✅ | **PASS** (Rigorous 500-block test) |
 | **Interleaver** | ✅ | ✅ | **PASS** (Rigorous 500-block test) |
 | **Scrambler** | ✅ | ✅ | **PASS** (Rigorous 500-block test) |
-| **Conv Encoder** | ✅ | 🚧 | Pending |
+| **Conv Encoder** | ✅ | ✅ | **PASS** (Rigorous 500-block test) |
 | **Diff Encoder** | ✅ | 🚧 | Pending |
 | **QPSK Mapper** | ✅ | 🚧 | Pending |
 
