@@ -13,7 +13,10 @@ RTL_SRCS := \
 	$(HDL_ROOT)/rtl/tx_chain/scrambler/scrambler.sv \
 	$(HDL_ROOT)/rtl/tx_chain/conv_encoder/conv_encoder.sv \
 	$(HDL_ROOT)/rtl/tx_chain/diff_encoder/diff_encoder.sv \
-	$(HDL_ROOT)/rtl/tx_chain/qpsk_mapper/qpsk_mapper.sv
+	$(HDL_ROOT)/rtl/tx_chain/qpsk_mapper/qpsk_mapper.sv \
+	$(HDL_ROOT)/rtl/tx_chain/rrc/rrc_pkg.sv \
+	$(HDL_ROOT)/rtl/tx_chain/rrc/rrc_filter.sv \
+	$(HDL_ROOT)/rtl/tx_chain/tx_chain.sv
 
 SIM_FLAGS ?= -g2012 -Wall -Wno-timescale -DASSERT_ON
 INCLUDE_FLAGS := \
@@ -22,7 +25,8 @@ INCLUDE_FLAGS := \
 	-I $(HDL_ROOT)/rtl/tx_chain/scrambler \
 	-I $(HDL_ROOT)/rtl/tx_chain/conv_encoder \
 	-I $(HDL_ROOT)/rtl/tx_chain/diff_encoder \
-	-I $(HDL_ROOT)/rtl/tx_chain/qpsk_mapper
+	-I $(HDL_ROOT)/rtl/tx_chain/qpsk_mapper \
+	-I $(HDL_ROOT)/rtl/tx_chain/rrc
 
 .PHONY: all test clean
 

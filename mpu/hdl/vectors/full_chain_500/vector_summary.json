@@ -1,0 +1,11 @@
+{
+  "input_len": 200,
+  "padded_len": 223,
+  "depth": 2,
+  "scrambler_enabled": true,
+  "seed": 93,
+  "stages": [
+    "rs",
+    "rrc"
+  ]
+}

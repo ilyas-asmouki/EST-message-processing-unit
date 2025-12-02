@@ -17,8 +17,22 @@ This repository contains the complete implementation of a CCSDS-compatible Messa
 | **Interleaver** | ✅ | ✅ | **PASS** (Rigorous 500-block test) |
 | **Scrambler** | ✅ | ✅ | **PASS** (Rigorous 500-block test) |
 | **Conv Encoder** | ✅ | ✅ | **PASS** (Rigorous 500-block test) |
-| **Diff Encoder** | ✅ | 🚧 | Pending |
-| **QPSK Mapper** | ✅ | 🚧 | Pending |
+| **Diff Encoder** | ✅ | ✅ | **PASS** (Integrated Chain Test) |
+| **QPSK Mapper** | ✅ | ✅ | **PASS** (Integrated Chain Test) |
+| **RRC Filter** | ✅ | ✅ | **PASS** (Integrated Chain Test) |
+| **FPGA Top** | N/A | ✅ | **PASS** (System Integration Test) |
+
+---
+
+## Hardware Implementation (Zynq + AD9122)
+
+The RTL design is verified and ready for synthesis on the ZedBoard.
+
+👉 **[Read the SYNTHESIS.md Guide](./SYNTHESIS.md)** for step-by-step instructions on:
+1.  Creating the Vivado Project.
+2.  Setting up the Block Design (Zynq PS + AXI DMA).
+3.  Implementing the Bitstream.
+4.  Writing the C Software (Vitis) to drive the system.
 
 ---
 
