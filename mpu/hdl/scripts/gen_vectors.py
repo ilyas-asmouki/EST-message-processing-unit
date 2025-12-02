@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 from pathlib import Path
 from typing import Iterable
 
@@ -25,6 +26,8 @@ import numpy as np
 
 
 def _read_input(args: argparse.Namespace) -> bytes:
+    if args.random_len is not None:
+        return bytes(random.getrandbits(8) for _ in range(args.random_len))
     if args.text is not None:
         return args.text.encode("utf-8")
     if args.hex is not None:
@@ -132,6 +135,7 @@ def build_parser() -> argparse.ArgumentParser:
     src.add_argument("--text", help="UTF-8 text input")
     src.add_argument("--hex", help="Hex string input (spaces allowed)")
     src.add_argument("--infile", help="Binary input file")
+    src.add_argument("--random-len", type=int, help="Generate N random bytes")
     p.add_argument("--depth", type=int, default=2, choices=sorted(POSSIBLE_DEPTHS), help="Interleaver depth I")
     p.add_argument("--no-scramble", action="store_true", help="Disable scrambling for the generated vectors")
     p.add_argument("--seed", type=lambda s: int(s, 0), default=DEFAULT_SEED, help="Scrambler seed (default matches model)")
