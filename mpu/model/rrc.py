@@ -6,8 +6,8 @@ from typing import Tuple
 import numpy as np
 
 # rrc filter parameters
-SAMPLES_PER_SYMBOL = 8
-FILTER_SPAN = 8
+SAMPLES_PER_SYMBOL = 4
+FILTER_SPAN = 10
 ROLL_OFF = 0.35
 NUM_TAPS = FILTER_SPAN * SAMPLES_PER_SYMBOL + 1
 
@@ -18,6 +18,7 @@ DATA_WIDTH = 16        # input data width (Q1.15 from QPSK)
 DATA_FRAC = 15         # fractional bits for data
 ACC_WIDTH = 48         # accumulator width to prevent overflow
 ACC_FRAC = DATA_FRAC + COEFF_FRAC  # 31 fractional bits
+OUTPUT_SCALE = 1.7     # scaling factor to prevent overflow (clipping)
 
 
 def float_to_fixed(value: float, frac_bits: int, width: int) -> int:
@@ -70,6 +71,9 @@ def generate_rrc_coefficients(
     
     # normalize to unit energy (sum of squares = 1)
     h = h / np.sqrt(np.sum(h ** 2))
+    
+    # apply output scaling to prevent overflow
+    h = h * OUTPUT_SCALE
     
     # convert to fixed point Q2.16
     h_fixed = np.array([float_to_fixed(c, COEFF_FRAC, COEFF_WIDTH) for c in h], dtype=np.int32)

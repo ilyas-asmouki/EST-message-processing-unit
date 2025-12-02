@@ -19,6 +19,9 @@ from mpu.model.interleaver import interleave, POSSIBLE_DEPTHS
 from mpu.model.scrambler import scramble_bits, DEFAULT_SEED
 from mpu.model.conv_encoder import conv_encode
 from mpu.model.diff_encoder import diff_encode
+from mpu.model.qpsk import qpsk_modulate_bytes_fixed, pack_iq_le_bytes
+from mpu.model.rrc import rrc_filter, upsample, SAMPLES_PER_SYMBOL, NUM_TAPS
+import numpy as np
 
 
 def _read_input(args: argparse.Namespace) -> bytes:
@@ -66,6 +69,29 @@ def generate_vectors(args: argparse.Namespace) -> int:
     scrambled = interleaved if args.no_scramble else scramble_bits(interleaved, seed=args.seed)
     convolved = conv_encode(scrambled)
     diffed = diff_encode(convolved)
+    qpsk_out_iq = qpsk_modulate_bytes_fixed(diffed)
+    qpsk_bytes = pack_iq_le_bytes(qpsk_out_iq)
+
+    # RRC Processing
+    qpsk_i = qpsk_out_iq[0::2]
+    qpsk_q = qpsk_out_iq[1::2]
+    qpsk_i_up = upsample(qpsk_i, SAMPLES_PER_SYMBOL)
+    qpsk_q_up = upsample(qpsk_q, SAMPLES_PER_SYMBOL)
+    
+    group_delay_samples = (NUM_TAPS - 1) // 2
+    total_delay_samples = 2 * group_delay_samples
+    qpsk_i_up_padded = np.concatenate([qpsk_i_up, np.zeros(total_delay_samples, dtype=np.int16)])
+    qpsk_q_up_padded = np.concatenate([qpsk_q_up, np.zeros(total_delay_samples, dtype=np.int16)])
+    
+    rrc_i, rrc_q = rrc_filter(qpsk_i_up_padded, qpsk_q_up_padded)
+    
+    rrc_i_int = np.clip(rrc_i, -32768, 32767).astype(np.int16)
+    rrc_q_int = np.clip(rrc_q, -32768, 32767).astype(np.int16)
+    
+    rrc_out_iq = np.empty(len(rrc_i_int) + len(rrc_q_int), dtype=np.int16)
+    rrc_out_iq[0::2] = rrc_i_int
+    rrc_out_iq[1::2] = rrc_q_int
+    rrc_bytes = pack_iq_le_bytes(rrc_out_iq)
 
     stage_map: dict[str, tuple[bytes, bytes, dict]] = {
         "rs": (padded, rs_out, {"block_bytes": RS_K, "codeword_bytes": len(rs_out)}),
@@ -73,6 +99,8 @@ def generate_vectors(args: argparse.Namespace) -> int:
         "scrambler": (interleaved, scrambled, {"enabled": not args.no_scramble, "seed": args.seed}),
         "conv": (scrambled, convolved, {"rate": "1/2", "constraint_length": 7}),
         "diff": (convolved, diffed, {}),
+        "qpsk": (diffed, qpsk_bytes, {"format": "Q1.15", "interleaved": True}),
+        "rrc": (qpsk_bytes, rrc_bytes, {"sps": SAMPLES_PER_SYMBOL, "taps": NUM_TAPS}),
     }
 
     out_dir = Path(args.out_dir)
@@ -107,7 +135,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--depth", type=int, default=2, choices=sorted(POSSIBLE_DEPTHS), help="Interleaver depth I")
     p.add_argument("--no-scramble", action="store_true", help="Disable scrambling for the generated vectors")
     p.add_argument("--seed", type=lambda s: int(s, 0), default=DEFAULT_SEED, help="Scrambler seed (default matches model)")
-    p.add_argument("--stage", action="append", choices=["rs", "interleaver", "scrambler", "conv", "diff"],
+    p.add_argument("--stage", action="append", choices=["rs", "interleaver", "scrambler", "conv", "diff", "qpsk", "rrc"],
                    help="Which pipeline stage(s) to emit (may be specified multiple times). Default: rs")
     p.add_argument("--out-dir", default="mpu/hdl/vectors", help="Destination directory for generated files")
     return p

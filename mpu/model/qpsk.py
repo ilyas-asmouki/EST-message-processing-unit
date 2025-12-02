@@ -133,7 +133,7 @@ if __name__ == "__main__":
     import random
     random.seed(0xD00D)
 
-    from commpy.modulation import QAMModem  # pip install commpy
+    from commpy.modulation import QAMModem  # pip install scikit-commpy
 
     def to_float_complex(iq_interleaved: np.ndarray, frac_bits: int) -> np.ndarray:
         scale = float((1 << frac_bits) - 1)

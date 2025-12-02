@@ -30,7 +30,7 @@ def run_demo():
         sys.executable, script_path,
         "--text", user_text,
         "--stage", "rs",
-        "--stage", "diff",
+        "--stage", "qpsk",
         "--out-dir", demo_dir
     ]
     
@@ -62,7 +62,7 @@ def run_demo():
     
     # Paths relative to tb_dir
     rs_vec_param = f"chain_tb.RS_VEC_DIR=\"{demo_dir}/rs\""
-    diff_vec_param = f"chain_tb.DIFF_VEC_DIR=\"{demo_dir}/diff\""
+    qpsk_vec_param = f"chain_tb.QPSK_VEC_DIR=\"{demo_dir}/qpsk\""
     blocks_param = f"chain_tb.TEST_BLOCKS={num_blocks}"
     
     # Source files (from Makefile)
@@ -75,6 +75,7 @@ def run_demo():
         f"{hdl_root}/scrambler/scrambler.sv",
         f"{hdl_root}/conv_encoder/conv_encoder.sv",
         f"{hdl_root}/diff_encoder/diff_encoder.sv",
+        f"{hdl_root}/qpsk_mapper/qpsk_mapper.sv",
         "chain_tb.sv"
     ]
     
@@ -83,11 +84,12 @@ def run_demo():
         f"-I{hdl_root}/interleaver",
         f"-I{hdl_root}/scrambler",
         f"-I{hdl_root}/conv_encoder",
-        f"-I{hdl_root}/diff_encoder"
+        f"-I{hdl_root}/diff_encoder",
+        f"-I{hdl_root}/qpsk_mapper"
     ]
     
     compile_cmd = ["iverilog", "-g2012", "-Wall", "-Wno-timescale", "-DASSERT_ON"] + includes + \
-                  ["-P", rs_vec_param, "-P", diff_vec_param, "-P", blocks_param] + \
+                  ["-P", rs_vec_param, "-P", qpsk_vec_param, "-P", blocks_param] + \
                   ["-s", "chain_tb", "-o", "demo_chain.vvp"] + srcs
                   
     # Run compilation in the TB directory
@@ -103,22 +105,33 @@ def run_demo():
         # We filter the output to show only our VISUAL tags and the final result
         proc = subprocess.Popen(["vvp", "demo_chain.vvp"], cwd=tb_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         
-        print(f"{'BYTE IDX':<10} | {'GOLDEN MODEL':<15} | {'RTL SIMULATION':<15} | {'STATUS'}")
-        print("-" * 60)
+        print(f"{'BYTE IDX':<10} | {'GOLDEN I/Q':<25} | {'RTL I/Q':<25} | {'STATUS'}")
+        print("-" * 80)
         
         if proc.stdout:
             for line in proc.stdout:
                 line_str = line.decode().strip()
                 if "[VISUAL]" in line_str:
-                    # Parse: [VISUAL] Byte 000 | Golden: 0xAB | RTL: 0xAB | MATCH
+                    # Parse: [VISUAL] Byte 00000 | Golden I: 0xa57e Q: 0xa57e | RTL I: 0xa57e Q: 0xa57e | MATCH
                     parts = line_str.split("|")
                     if len(parts) >= 4:
                         byte_idx = parts[0].split()[-1]
-                        golden = parts[1].split()[-1]
-                        rtl = parts[2].split()[-1]
+                        
+                        # Golden I: 0xa57e Q: 0xa57e
+                        golden_part = parts[1].strip()
+                        golden_i = golden_part.split()[2]
+                        golden_q = golden_part.split()[4]
+                        golden_str = f"I:{golden_i} Q:{golden_q}"
+                        
+                        # RTL I: 0xa57e Q: 0xa57e
+                        rtl_part = parts[2].strip()
+                        rtl_i = rtl_part.split()[2]
+                        rtl_q = rtl_part.split()[4]
+                        rtl_str = f"I:{rtl_i} Q:{rtl_q}"
+                        
                         status = parts[3].strip()
                         
-                        print(f"{byte_idx:<10} | {golden:<15} | {rtl:<15} | {status}")
+                        print(f"{byte_idx:<10} | {golden_str:<25} | {rtl_str:<25} | {status}")
                 elif "PASS:" in line_str:
                     print("-" * 60)
                     print(f"\nRESULT: {line_str}")

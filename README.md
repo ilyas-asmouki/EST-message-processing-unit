@@ -95,3 +95,25 @@ python3 mpu/hdl/scripts/gen_vectors.py --infile random.bin --stage rs --stage in
 ```
 
 Then update the `VEC_DIR` in the corresponding testbench to point to `mpu/hdl/vectors/rigorous_custom`.
+
+---
+
+## Report Notes: Synchronization & Robustness
+
+*These notes summarize findings from the Python model robustness testing (AWGN/CFO/STO) to be included in the final project report.*
+
+### 1. Transmitter vs. Receiver Responsibility
+*   **TX Side (Implemented)**: The Transmitter is "dumb" and open-loop. It does not need to know about channel conditions. Its only responsibility is to generate a clean signal that meets the spectral mask (via the RRC filter) and has correct timing/levels.
+*   **RX Side (Future Work)**: The Receiver bears the entire burden of synchronization. It must blindly estimate and correct for all channel impairments introduced during transmission.
+
+### 2. Critical Impairments & Solutions
+Simulation with `mpu.model.pipeline` confirmed that the current "ideal" receiver fails under realistic conditions.
+
+| Impairment | Effect on Signal | Observed Failure Mode | Required RX Block (HDL) |
+| :--- | :--- | :--- | :--- |
+| **CFO (Carrier Frequency Offset)** | Constellation rotates over time ("spinning phase"). | **Catastrophic**. Even small offsets (100ppm) cause the phase to rotate >45° within a packet, causing the QPSK slicer to map symbols to wrong quadrants. Differential encoding handles *static* phase ambiguity but cannot handle *spinning* phase. | **Costas Loop** (Carrier Recovery) |
+| **STO (Symbol Timing Offset)** | Sampling occurs on the slope of the pulse, not the peak. | **Degradation**. Causes Inter-Symbol Interference (ISI). At 0.5 sample offset, the "eye" closes significantly, reducing noise margin. | **Gardner Loop** (Timing Recovery) |
+| **AWGN (Noise)** | Adds random variance to symbol points. | **Packet Loss**. If noise pushes a symbol across the decision boundary, a bit error occurs. RS coding can fix sparse errors, but fails if synchronization loss causes a burst of errors. | **Matched Filter** (Implemented) |
+
+### 3. Conclusion for HDL Design
+For the current scope (TX implementation), the design is robust. However, any future RX implementation **must** include synchronization loops (Costas/Gardner). A simple "matched filter + slicer" architecture is insufficient for real-world hardware links where oscillators are never perfectly matched.

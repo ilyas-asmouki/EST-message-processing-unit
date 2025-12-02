@@ -162,3 +162,68 @@ def add_awgn(
     }
 
     return i_noisy, q_noisy, metrics
+
+
+def apply_cfo(
+    i_samples: np.ndarray, 
+    q_samples: np.ndarray, 
+    freq_offset_norm: float
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Apply Carrier Frequency Offset.
+    
+    Args:
+        i_samples: I samples (int16).
+        q_samples: Q samples (int16).
+        freq_offset_norm: Frequency offset normalized to sampling rate (Delta_f / Fs).
+        
+    Returns:
+        (i_out, q_out) as int16.
+    """
+    if freq_offset_norm == 0.0:
+        return i_samples, q_samples
+
+    t = np.arange(len(i_samples))
+    phase = 2 * np.pi * freq_offset_norm * t
+    # Convert to float for rotation
+    complex_sig = (i_samples.astype(float) + 1j * q_samples.astype(float)) * np.exp(1j * phase)
+    
+    return (
+        np.clip(complex_sig.real, -32768, 32767).astype(np.int16),
+        np.clip(complex_sig.imag, -32768, 32767).astype(np.int16)
+    )
+
+
+def apply_sto(
+    i_samples: np.ndarray, 
+    q_samples: np.ndarray, 
+    delay_samples: float
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Apply Symbol Timing Offset using cubic interpolation.
+    
+    Args:
+        i_samples: I samples (int16).
+        q_samples: Q samples (int16).
+        delay_samples: Delay in samples (can be fractional).
+        
+    Returns:
+        (i_out, q_out) as int16.
+    """
+    if delay_samples == 0.0:
+        return i_samples, q_samples
+
+    from scipy import interpolate
+    
+    t = np.arange(len(i_samples))
+    # Create interpolator
+    f_i = interpolate.interp1d(t, i_samples, kind='cubic', fill_value="extrapolate")
+    f_q = interpolate.interp1d(t, q_samples, kind='cubic', fill_value="extrapolate")
+    
+    t_shifted = t - delay_samples
+    
+    i_out = f_i(t_shifted)
+    q_out = f_q(t_shifted)
+    
+    return (
+        np.clip(i_out, -32768, 32767).astype(np.int16),
+        np.clip(q_out, -32768, 32767).astype(np.int16)
+    )

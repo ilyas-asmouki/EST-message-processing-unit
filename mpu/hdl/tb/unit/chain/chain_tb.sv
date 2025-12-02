@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Chain testbench: RS -> Interleaver -> Scrambler -> Conv -> Diff
+// Chain testbench: RS -> Interleaver -> Scrambler -> Conv -> Diff -> QPSK
 
 `timescale 1ns/1ps
 
@@ -9,14 +9,16 @@ module chain_tb;
 
   // Use the same rigorous vectors
   parameter string RS_VEC_DIR    = "../../../vectors/rigorous_500/rs";
-  parameter string DIFF_VEC_DIR  = "../../../vectors/rigorous_500/diff";
+  parameter string QPSK_VEC_DIR  = "../../../vectors/rigorous_500/qpsk";
   
   parameter int    TEST_BLOCKS   = 500;
   localparam int    RS_IN_BYTES   = TEST_BLOCKS * RS_K;
-  localparam int    FINAL_BYTES   = TEST_BLOCKS * 512; // Conv/Diff output size
+  // Diff output: TEST_BLOCKS * 512 bytes.
+  // QPSK output: Diff output * 4 symbols * 4 bytes/symbol = Diff output * 16 bytes.
+  localparam int    FINAL_BYTES   = TEST_BLOCKS * 512 * 16; 
   
   localparam int    MAX_IN_BYTES  = 130000;
-  localparam int    MAX_OUT_BYTES = 260000;
+  localparam int    MAX_OUT_BYTES = 4200000; // ~4MB
 
   // Clock/reset
   logic clk;
@@ -60,7 +62,7 @@ module chain_tb;
   logic        conv_m_sop;
   logic        conv_m_is_parity;
 
-  // --- Diff Encoder Outputs ---
+  // --- Diff Encoder -> QPSK Mapper ---
   logic        diff_m_valid;
   logic        diff_m_ready;
   logic [7:0]  diff_m_data;
@@ -68,11 +70,20 @@ module chain_tb;
   logic        diff_m_sop;
   logic        diff_m_is_parity;
 
+  // --- QPSK Mapper Outputs ---
+  logic        qpsk_m_valid;
+  logic        qpsk_m_ready;
+  logic [15:0] qpsk_m_i;
+  logic [15:0] qpsk_m_q;
+  logic        qpsk_m_last;
+  logic        qpsk_m_sop;
+  logic        qpsk_m_is_parity;
+
   // Memories
   logic [7:0] input_mem  [0:MAX_IN_BYTES-1];
   logic [7:0] output_mem [0:MAX_OUT_BYTES-1];
 
-  int unsigned out_idx;
+  int unsigned out_byte_idx;
   int unsigned errors;
   logic        inputs_done;
 
@@ -95,12 +106,12 @@ module chain_tb;
     string out_path;
     
     in_path  = {RS_VEC_DIR, "/input.hex"};
-    out_path = {DIFF_VEC_DIR, "/output.hex"};
+    out_path = {QPSK_VEC_DIR, "/output.hex"};
     
     $display("[TB] Loading Chain Input (RS) from %s", in_path);
     $readmemh(in_path, input_mem);
     
-    $display("[TB] Loading Chain Output (Diff) from %s", out_path);
+    $display("[TB] Loading Chain Output (QPSK) from %s", out_path);
     $readmemh(out_path, output_mem);
     
     $display("[TB] Expecting %0d output bytes", FINAL_BYTES);
@@ -200,6 +211,25 @@ module chain_tb;
     .m_axis_is_parity (diff_m_is_parity)
   );
 
+  // 6. QPSK Mapper
+  qpsk_mapper qpsk_inst (
+    .clk              (clk),
+    .rst_n            (rst_n),
+    .s_axis_valid     (diff_m_valid),
+    .s_axis_ready     (diff_m_ready),
+    .s_axis_data      (diff_m_data),
+    .s_axis_last      (diff_m_last),
+    .s_axis_sop       (diff_m_sop),
+    .s_axis_is_parity (diff_m_is_parity),
+    .m_axis_valid     (qpsk_m_valid),
+    .m_axis_ready     (qpsk_m_ready),
+    .m_axis_i         (qpsk_m_i),
+    .m_axis_q         (qpsk_m_q),
+    .m_axis_last      (qpsk_m_last),
+    .m_axis_sop       (qpsk_m_sop),
+    .m_axis_is_parity (qpsk_m_is_parity)
+  );
+
   // -------------------------------------------------------------------------
   // Stimulus & Checking
   // -------------------------------------------------------------------------
@@ -247,41 +277,52 @@ module chain_tb;
     end
   end
 
-  // Output Ready Generator (Backpressure on Diff Encoder)
+  // Output Ready Generator (Backpressure on QPSK Mapper)
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      diff_m_ready <= 1'b0;
+      qpsk_m_ready <= 1'b0;
     end else begin
-      diff_m_ready <= (prng_out[2:0] != 3'b000); // ~87% ready
+      qpsk_m_ready <= (prng_out[2:0] != 3'b000); // ~87% ready
     end
   end
 
-  // Scoreboard (Checks Diff Output)
+  // Scoreboard (Checks QPSK Output)
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      out_idx <= 0;
-      errors  <= 0;
-    end else if (diff_m_valid && diff_m_ready) begin
-      if (out_idx >= FINAL_BYTES) begin
+      out_byte_idx <= 0;
+      errors       <= 0;
+    end else if (qpsk_m_valid && qpsk_m_ready) begin
+      if (out_byte_idx >= FINAL_BYTES) begin
         errors++;
-        $error("[TB] Unexpected extra output byte (idx=%0d)", out_idx);
+        $error("[TB] Unexpected extra output symbol (byte idx=%0d)", out_byte_idx);
       end else begin
-        logic [7:0] exp_byte;
-        exp_byte = output_mem[out_idx];
+        logic [15:0] exp_i;
+        logic [15:0] exp_q;
         
-        if (exp_byte !== diff_m_data) begin
+        // Reconstruct expected 16-bit values from Little Endian bytes
+        exp_i = {output_mem[out_byte_idx+1], output_mem[out_byte_idx]};
+        exp_q = {output_mem[out_byte_idx+3], output_mem[out_byte_idx+2]};
+        
+        if (exp_i !== qpsk_m_i) begin
           errors++;
-          $error("[TB] Data mismatch @%0d: got 0x%02x expected 0x%02x",
-                 out_idx, diff_m_data, exp_byte);
+          $error("[TB] I mismatch @byte%0d: got 0x%04x expected 0x%04x",
+                 out_byte_idx, qpsk_m_i, exp_i);
+        end
+        
+        if (exp_q !== qpsk_m_q) begin
+          errors++;
+          $error("[TB] Q mismatch @byte%0d: got 0x%04x expected 0x%04x",
+                 out_byte_idx, qpsk_m_q, exp_q);
         end
 
-        // Visual verification for the user
-        if (out_idx < 16) begin
-             $display("[VISUAL] Byte %03d | Golden: 0x%02x | RTL: 0x%02x | %s", 
-                      out_idx, exp_byte, diff_m_data, (exp_byte === diff_m_data) ? "MATCH" : "FAIL");
+        // Visual verification for the user (first few symbols)
+        if (out_byte_idx < 64) begin
+             $display("[VISUAL] Byte %05d | Golden I: 0x%04x Q: 0x%04x | RTL I: 0x%04x Q: 0x%04x | %s", 
+                      out_byte_idx, exp_i, exp_q, qpsk_m_i, qpsk_m_q, 
+                      ((exp_i === qpsk_m_i) && (exp_q === qpsk_m_q)) ? "MATCH" : "FAIL");
         end
       end
-      out_idx <= out_idx + 1;
+      out_byte_idx <= out_byte_idx + 4;
     end
   end
 
@@ -289,10 +330,21 @@ module chain_tb;
   initial begin
     @(posedge rst_n);
     wait (inputs_done);
-    wait (out_idx == FINAL_BYTES);
+    // wait for all output bytes to be consumed
+    fork
+      begin
+        wait (out_byte_idx == FINAL_BYTES);
+      end
+      begin
+        #100000000; // timeout
+        $error("[TB] Timeout waiting for outputs");
+        $finish;
+      end
+    join_any
+    
     #100;
     if (errors == 0) begin
-      $display("[TB] PASS: Chain (RS->Int->Scr->Conv->Diff) matched all %0d bytes", FINAL_BYTES);
+      $display("[TB] PASS: Chain (RS->Int->Scr->Conv->Diff->QPSK) matched all %0d bytes", FINAL_BYTES);
     end else begin
       $error("[TB] FAIL: %0d mismatches detected in chain", errors);
     end

@@ -36,7 +36,7 @@ from mpu.model.rrc import (
     NUM_TAPS,
     RRC_COEFFS,
 )
-from mpu.model.helpers import add_awgn, bit_error_rate, hamming_distance_bytes
+from mpu.model.helpers import add_awgn, bit_error_rate, hamming_distance_bytes, apply_cfo, apply_sto
 
 CONV_L = 7
 CONV_G1_OCT = 0o171
@@ -520,7 +520,7 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--save-figs", metavar="PREFIX",
                    help="Save visualization figures with this prefix (e.g., 'pipeline' -> 'pipeline_1_rs.png').")
 
-    noise_group = p.add_argument_group("AWGN Channel")
+    noise_group = p.add_argument_group("Channel Impairments")
     noise_level = noise_group.add_mutually_exclusive_group()
     noise_level.add_argument("--snr-db", type=float,
                             help="Add complex AWGN with this target SNR (dB) referenced to the TX RRC output power.")
@@ -528,6 +528,10 @@ def main(argv: Optional[list] = None) -> int:
                              help="Add AWGN using this per-dimension standard deviation (same units as the I/Q samples).")
     noise_group.add_argument("--noise-seed", type=int, default=0,
                              help="Seed for AWGN RNG (default: 0).")
+    noise_group.add_argument("--cfo", type=float, default=0.0,
+                             help="Carrier Frequency Offset (normalized to Fs). E.g. 1e-4.")
+    noise_group.add_argument("--sto", type=float, default=0.0,
+                             help="Symbol Timing Offset (in samples). E.g. 0.5.")
 
     sweep_group = p.add_argument_group("BER Sweeps / Performance Curves")
     sweep_group.add_argument("--snr-sweep", type=str,
@@ -592,10 +596,17 @@ def main(argv: Optional[list] = None) -> int:
     qpsk_i_rrc = qpsk_i_filtered
     qpsk_q_rrc = qpsk_q_filtered
 
-    # Apply optional AWGN channel after TX filtering
+    # Apply Channel Impairments
+    # 1. CFO
+    qpsk_i_imp, qpsk_q_imp = apply_cfo(qpsk_i_rrc, qpsk_q_rrc, args.cfo)
+    
+    # 2. STO
+    qpsk_i_imp, qpsk_q_imp = apply_sto(qpsk_i_imp, qpsk_q_imp, args.sto)
+
+    # 3. AWGN
     qpsk_i_channel, qpsk_q_channel, noise_metrics = add_awgn(
-        qpsk_i_rrc,
-        qpsk_q_rrc,
+        qpsk_i_imp,
+        qpsk_q_imp,
         snr_db=args.snr_db,
         noise_std=args.noise_std,
         seed=args.noise_seed,
@@ -721,13 +732,18 @@ def main(argv: Optional[list] = None) -> int:
     print()
 
     print("=== Channel / Noise Model ===")
+    if args.cfo != 0.0:
+        print(f"CFO enabled: {args.cfo} Fs")
+    if args.sto != 0.0:
+        print(f"STO enabled: {args.sto} samples")
+        
     if noise_metrics.get("enabled"):
         target = noise_metrics.get("target_snr_db")
         target_str = f"target SNR = {target:.2f} dB" if target is not None else f"noise σ = {noise_metrics['noise_std']:.2f}"
         print(f"AWGN enabled ({target_str}, seed={noise_metrics.get('seed')})")
         print(f"Measured SNR = {noise_metrics.get('measured_snr_db'):.2f} dB")
     else:
-        print("AWGN disabled (ideal channel)")
+        print("AWGN disabled")
     print(f"noisy rrc i (size = {len(qpsk_i_channel)}) =")
     print(" ".join(f"{int(i):+6d}" for i in qpsk_i_channel[:display_samples]))
     if len(qpsk_i_channel) > display_samples:
@@ -917,8 +933,8 @@ def main(argv: Optional[list] = None) -> int:
 
     _maybe_run_sweeps(
         args,
-        qpsk_i_rrc,
-        qpsk_q_rrc,
+        qpsk_i_imp,
+        qpsk_q_imp,
         qpsk_i,
         data_for_rs,
     )
