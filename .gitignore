@@ -16,6 +16,52 @@ work/
 mpu/hdl/sim/*/work*/
 mpu/hdl/sim/*/transcript
 *.jou
+*.pb
+*.wdb
+*.str
+.Xil/
+.cache/
+.ip_user_files/
+.hw/
+.sim/
+.runs/
+.srcs/
+.gen/
+
+# Vivado Generated
+*.xsa
+*.bit
+*.bin
+*.dcp
+*.sysdef
+
+# Vitis / SDK
+.metadata/
+.analytics/
+.rigel_lopper/
+.settings/
+.wsdata/
+_ide/
+export/
+logs/
+workspace_journal.py
+*.elf
+*.o
+*.d
+*.map
+*.bif
+*.xpfm
+*.spr
+*.cmake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+
+# Specific Vitis Project Folders
+mpu/sw/zed_mpu_platform/
+mpu/sw/mpu_app/build/
+mpu/sw/mpu_app/_ide/
 
 # Generated Vectors
 mpu/hdl/vectors/*
