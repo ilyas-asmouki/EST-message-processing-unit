@@ -36,11 +36,11 @@ This is where we connect the Processor (PS) to our Logic (PL).
         *   **Enable Scatter Gather Engine**: Uncheck (Simple mode is easier for beginners).
         *   **Enable Write Channel**: Uncheck (We only need Read Channel: Memory -> Device).
         *   **Width of Buffer Length Register**: 23 (supports large transfers).
-        *   **Stream Data Width**: 8 bits (Matches our `fpga_top` input).
+        *   **Stream Data Width**: 8 bits (Matches our `mpu_top` input).
         *   **Max Burst Size**: 16 or 32.
 4.  **Add RTL Module**:
     *   Right-click diagram -> **Add Module**.
-    *   Select `fpga_top`.
+    *   Select `mpu_top`.
 5.  **Add Clocking**:
     *   The AD9122 usually requires a high-quality clock. If you are using the Zynq to generate the clock (e.g., 100MHz or 200MHz):
     *   Double-click Zynq PS -> **Clock Configuration** -> **PL Fabric Clocks**.
@@ -53,13 +53,13 @@ This is where we connect the Processor (PS) to our Logic (PL).
     *   Check all boxes. It will automatically add **AXI Interconnects** and **Processor System Reset** blocks.
     *   Ensure the DMA's `M_AXI_MM2S` connects to the Zynq's `S_AXI_HP0` (High Performance port) for direct DDR access. If `S_AXI_HP0` isn't enabled, enable it in Zynq PS settings.
 2.  **Connect Data Stream**:
-    *   Connect `axi_dma_0/M_AXIS_MM2S` (Master Stream) to `fpga_top_0/s_axis` (Slave Stream).
+    *   Connect `axi_dma_0/M_AXIS_MM2S` (Master Stream) to `mpu_top_0/s_axis` (Slave Stream).
     *   *Note: If interface names don't match exactly, expand the interfaces (+) and connect `tdata`, `tvalid`, `tready`, `tlast` manually.*
 3.  **Connect Clocks & Resets**:
-    *   Ensure `fpga_top/clk` is connected to the system clock (e.g., `FCLK_CLK0`).
-    *   Ensure `fpga_top/rst_n` is connected to `peripheral_aresetn` (from Processor System Reset).
+    *   Ensure `mpu_top/clk` is connected to the system clock (e.g., `FCLK_CLK0`).
+    *   Ensure `mpu_top/rst_n` is connected to `peripheral_aresetn` (from Processor System Reset).
 4.  **Make External Ports**:
-    *   Right-click on the DAC output pins of `fpga_top_0` (`dac_d_p`, `dac_d_n`, `dac_dci_p`, etc.).
+    *   Right-click on the DAC output pins of `mpu_top_0` (`dac_d_p`, `dac_d_n`, `dac_dci_p`, etc.).
     *   Select **Make External**.
     *   Rename the external ports to match your constraints file (e.g., `DAC_DATA_P`, `DAC_DATA_N`, etc.).
 

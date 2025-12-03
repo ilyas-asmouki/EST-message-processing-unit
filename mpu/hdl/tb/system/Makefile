@@ -3,7 +3,7 @@ VVP ?= vvp
 
 HDL_ROOT := ../..
 BUILD_DIR := build
-VVP_OUT := $(BUILD_DIR)/fpga_top_tb.vvp
+VVP_OUT := $(BUILD_DIR)/mpu_top_tb.vvp
 
 RTL_SRCS := \
 	$(HDL_ROOT)/sim/unisims_mock.sv \
@@ -19,7 +19,7 @@ RTL_SRCS := \
 	$(HDL_ROOT)/rtl/tx_chain/rrc/rrc_filter.sv \
 	$(HDL_ROOT)/rtl/tx_chain/tx_chain.sv \
 	$(HDL_ROOT)/rtl/dac_interface/dac_interface.sv \
-	$(HDL_ROOT)/rtl/fpga_top.sv
+	$(HDL_ROOT)/rtl/mpu_top.v
 
 SIM_FLAGS ?= -g2012 -Wall -Wno-timescale -DASSERT_ON
 INCLUDE_FLAGS := \
@@ -38,8 +38,8 @@ all: test
 $(BUILD_DIR):
 	@mkdir -p $@
 
-$(VVP_OUT): $(RTL_SRCS) fpga_top_tb.sv | $(BUILD_DIR)
-	$(IVL) $(SIM_FLAGS) $(INCLUDE_FLAGS) -s fpga_top_tb -o $@ $^
+$(VVP_OUT): $(RTL_SRCS) mpu_top_tb.sv | $(BUILD_DIR)
+	$(IVL) $(SIM_FLAGS) $(INCLUDE_FLAGS) -s mpu_top_tb -o $@ $^
 
 test: $(VVP_OUT)
 	$(VVP) $<

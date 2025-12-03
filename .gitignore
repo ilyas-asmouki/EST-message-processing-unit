@@ -17,9 +17,8 @@ mpu/hdl/sim/*/work*/
 mpu/hdl/sim/*/transcript
 *.jou
 
-# Generated Vectors (Keep smoke tests, ignore large rigorous ones)
-mpu/hdl/vectors/rigorous_*/
-mpu/hdl/vectors/random_*/
+# Generated Vectors
+mpu/hdl/vectors/*
 
 # IDEs / Editors
 .vscode/
@@ -29,3 +28,6 @@ mpu/hdl/vectors/random_*/
 
 # OS
 Thumbs.db
+
+# jsons
+*.json
