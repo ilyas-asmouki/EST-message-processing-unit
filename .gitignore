@@ -77,3 +77,6 @@ Thumbs.db
 
 # jsons
 *.json
+
+# final report
+final-report/

@@ -8,7 +8,7 @@ set_property -dict {PACKAGE_PIN E20 IOSTANDARD LVDS_25} [get_ports dac_dci_n]
 
 # frame sync
 set_property -dict {PACKAGE_PIN N17 IOSTANDARD LVDS_25} [get_ports dac_frame_p]
-set_property -dict {PACKAGE_PIN N18 IOSTANDARD LVDS_25} [get_ports dac_frame_ n]
+set_property -dict {PACKAGE_PIN N18 IOSTANDARD LVDS_25} [get_ports dac_frame_n]
 
 # data lines
 set_property -dict {PACKAGE_PIN A21 IOSTANDARD LVDS_25} [get_ports {dac_d_p[0]}]
