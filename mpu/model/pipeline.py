@@ -187,15 +187,16 @@ def _decode_stream_for_metrics(
     try:
         from commpy.channelcoding.convcode import viterbi_decode
 
-        i_matched = fir_filter(qpsk_i_rx, RRC_COEFFS)
-        q_matched = fir_filter(qpsk_q_rx, RRC_COEFFS)
+        # Use fixed point convolution for receiver
+        i_matched, q_matched = rrc_filter(qpsk_i_rx, qpsk_q_rx)
+
         group_delay = (NUM_TAPS - 1) // 2
         total_delay = 2 * group_delay
         i_down = i_matched[total_delay::SAMPLES_PER_SYMBOL][:num_symbols]
         q_down = q_matched[total_delay::SAMPLES_PER_SYMBOL][:num_symbols]
 
-        i_recovered = np.clip(i_down, -32768, 32767).astype(np.int16)
-        q_recovered = np.clip(q_down, -32768, 32767).astype(np.int16)
+        i_recovered = i_down
+        q_recovered = q_down
 
         iq_recovered = np.empty(len(i_recovered) * 2, dtype=np.int16)
         iq_recovered[0::2] = i_recovered
@@ -256,8 +257,12 @@ def _decode_stream_for_metrics(
         restored = bytearray()
         for off in range(0, len(deintl), CODEWORD_BYTES):
             cw = deintl[off:off + CODEWORD_BYTES]
-            msg, _, _ = rs_codec.decode(cw)
-            restored.extend(msg)
+            try:
+                msg, _, _ = rs_codec.decode(cw)
+                restored.extend(msg)
+            except Exception:
+                # RS failed, use systematic part
+                restored.extend(cw[:223])
 
         return True, {
             "restored": bytes(restored),
@@ -795,9 +800,8 @@ def main(argv: Optional[list] = None) -> int:
         
         from mpu.model.rrc import RRC_COEFFS
         
-        # Apply matched filter (same RRC filter)
-        i_matched = fir_filter(qpsk_i_channel, RRC_COEFFS)
-        q_matched = fir_filter(qpsk_q_channel, RRC_COEFFS)
+        # Apply matched filter
+        i_matched, q_matched = rrc_filter(qpsk_i_channel, qpsk_q_channel)
         
         print(f"receiver matched filter output i (size = {len(i_matched)}):")
         print(" ".join(f"{int(i):+6d}" for i in i_matched[:40]))

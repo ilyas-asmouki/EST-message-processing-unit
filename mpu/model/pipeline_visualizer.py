@@ -20,7 +20,7 @@ from mpu.model.qpsk import qpsk_modulate_bytes_fixed, qpsk_demod_hard_fixed, FRA
 from mpu.model.rrc import (rrc_filter, upsample, fir_filter, SAMPLES_PER_SYMBOL, 
                            FILTER_SPAN, ROLL_OFF, NUM_TAPS, RRC_COEFFS,
                            fixed_to_float, COEFF_FRAC)
-from mpu.model.helpers import bits_from_bytes, pad_to_block, add_awgn
+from mpu.model.helpers import bits_from_bytes, pad_to_block, add_awgn, bytes_from_bits
 
 
 
@@ -156,9 +156,12 @@ def plot_psd(ax, signal: np.ndarray, fs: float, title: str):
     from scipy import signal as sp_signal
     f, psd = sp_signal.welch(signal, fs=fs, nperseg=min(2048, len(signal)//4))
     
-    ax.semilogy(f, psd)
+    # Convert to dB
+    psd_db = 10 * np.log10(psd + 1e-12)
+    
+    ax.plot(f, psd_db)
     ax.set_xlabel('Frequency (normalized to symbol rate)')
-    ax.set_ylabel('Power Spectral Density')
+    ax.set_ylabel('Power Spectral Density (dB)')
     ax.set_title(title)
     ax.grid(True, alpha=0.3)
 
@@ -209,12 +212,23 @@ def matched_filter_and_downsample(
     return i_matched, q_matched, i_down, q_down, total_delay
 
 
-def format_noise_summary(noise_metrics: Optional[dict]) -> str:
-    """Create a compact text summary for the AWGN settings/measurements."""
+def format_noise_summary(noise_metrics: Optional[dict], args: Optional[argparse.Namespace] = None) -> str:
+    """Create a compact text summary for the channel impairments."""
+    lines = []
+    
+    # CFO/STO
+    if args:
+        if args.cfo != 0.0:
+            lines.append(f"CFO: {args.cfo:.1e} Fs")
+        if args.sto != 0.0:
+            lines.append(f"STO: {args.sto:.2f} smp")
+            
     if not noise_metrics or not noise_metrics.get("enabled"):
-        return "AWGN disabled\nIdeal channel (no impairment)"
+        if not lines:
+            return "Ideal channel\n(no impairments)"
+        return "\n".join(lines)
 
-    lines = ["AWGN enabled"]
+    lines.append("AWGN enabled")
     target = noise_metrics.get("target_snr_db")
     if target is not None:
         lines.append(f"Target SNR: {target:.2f} dB")
@@ -224,14 +238,6 @@ def format_noise_summary(noise_metrics: Optional[dict]) -> str:
     measured = noise_metrics.get("measured_snr_db")
     if measured is not None:
         lines.append(f"Measured SNR: {measured:.2f} dB")
-
-    sig_pow = noise_metrics.get("signal_power")
-    if sig_pow is not None:
-        lines.append(f"Signal power: {sig_pow:.3e}")
-
-    noise_pow = noise_metrics.get("measured_noise_power")
-    if noise_pow is not None:
-        lines.append(f"Noise power: {noise_pow:.3e}")
 
     seed = noise_metrics.get("seed")
     if seed is not None:
@@ -443,13 +449,21 @@ def create_rrc_figure(
     ax = fig.add_subplot(gs[0, 1])
     freq_response = np.fft.fft(coeffs_float, 4096)
     freq_db = 20 * np.log10(np.abs(freq_response) + 1e-10)
-    freq_axis = np.linspace(0, 1, len(freq_db))
+    
+    # Cut off at 0.5 (Nyquist)
+    half_len = len(freq_db) // 2
+    freq_db = freq_db[:half_len]
+    freq_axis = np.linspace(0, 0.5, len(freq_db))
+    
     ax.plot(freq_axis, freq_db)
     ax.set_xlabel('Normalized Frequency')
     ax.set_ylabel('Magnitude (dB)')
     ax.set_title(f'Frequency Response (β={ROLL_OFF})')
     ax.grid(True, alpha=0.3)
-    ax.set_ylim(-60, 5)
+    
+    # Dynamic ylim based on max in the 0-0.5 range
+    max_mag = np.max(freq_db)
+    ax.set_ylim(-60, max_mag + 2)
     
     ax = fig.add_subplot(gs[0, 2])
     ax.text(0.5, 0.5, f'RRC Filter Parameters:\n\n'
@@ -513,12 +527,108 @@ def create_rrc_figure(
             fs=SAMPLES_PER_SYMBOL,
             nperseg=min(2048, len(signal_noisy_norm) // 4),
         )
-        ax.semilogy(f, psd, color='coral', alpha=0.7, label='Post-Channel')
+        psd_db = 10 * np.log10(psd + 1e-12)
+        ax.plot(f, psd_db, color='coral', alpha=0.7, label='Post-Channel')
         ax.legend()
     
     fig.suptitle('Stage 6: Root Raised Cosine Pulse Shaping', 
                  fontsize=14, fontweight='bold')
     return fig
+
+
+def calculate_ber_metrics(
+    qpsk_i_channel: np.ndarray,
+    qpsk_q_channel: np.ndarray,
+    diff_encoded_ref: bytes,
+    data_padded_ref: bytes,
+    args: argparse.Namespace,
+) -> Tuple[float, float]:
+    """Calculate QPSK Hard Demod BER and Final BER."""
+    try:
+        from commpy.channelcoding.convcode import Trellis, viterbi_decode
+        import reedsolo
+    except ImportError:
+        return -1.0, -1.0
+
+    # 1. Matched Filter & Downsample
+    symbol_count = len(diff_encoded_ref) * 4
+    _, _, i_down, q_down, _ = matched_filter_and_downsample(
+        qpsk_i_channel, qpsk_q_channel, symbol_count
+    )
+    
+    # 2. Recover IQ
+    i_rec = np.clip(i_down, -32768, 32767).astype(np.int16)
+    q_rec = np.clip(q_down, -32768, 32767).astype(np.int16)
+    iq_rec = np.empty(len(i_rec) * 2, dtype=np.int16)
+    iq_rec[0::2] = i_rec
+    iq_rec[1::2] = q_rec
+    
+    # 3. Hard Demod
+    demod_bytes = qpsk_demod_hard_fixed(iq_rec, interleaved=True)
+    
+    # BER 1: Hard Demod
+    n = min(len(diff_encoded_ref), len(demod_bytes))
+    ref = np.frombuffer(diff_encoded_ref[:n], dtype=np.uint8)
+    act = np.frombuffer(demod_bytes[:n], dtype=np.uint8)
+    
+    diff = ref ^ act
+    bit_errors = 0
+    for b in diff:
+        bit_errors += bin(b).count('1')
+        
+    ber_hard = bit_errors / (n * 8) if n > 0 else 0.0
+    
+    # 4. Full Decode
+    de_diff = diff_decode(demod_bytes)
+    
+    L = 7
+    G1_OCT = 0o171
+    G2_OCT = 0o133
+    DATA_BITS_PER_BLOCK = CODEWORD_BYTES * 8
+    TAIL_BITS = L - 1
+    ENC_BITS_PER_BLOCK = 2 * (DATA_BITS_PER_BLOCK + TAIL_BITS)
+    ENC_BYTES_PER_BLOCK = (ENC_BITS_PER_BLOCK + 7) // 8
+    
+    trellis = Trellis(np.array([L-1]), np.array([[G1_OCT, G2_OCT]], dtype=int))
+    
+    viterbi_out_bits = []
+    for off in range(0, len(de_diff), ENC_BYTES_PER_BLOCK):
+        blk_bytes = de_diff[off:off + ENC_BYTES_PER_BLOCK]
+        bits_full = bits_from_bytes(blk_bytes)
+        bits = bits_full[:ENC_BITS_PER_BLOCK]
+        dec = viterbi_decode(np.array(bits, dtype=float), trellis,
+                            tb_depth=5*(L-1), decoding_type='hard')
+        viterbi_out_bits.extend(int(b) for b in dec[:DATA_BITS_PER_BLOCK])
+        
+    viterbi_bytes = bytes_from_bits(viterbi_out_bits)
+    
+    descrambled = viterbi_bytes if args.no_scramble else descramble_bits(viterbi_bytes, seed=args.seed)
+    deinterleaved = deinterleave(descrambled, args.depth)
+    
+    rs = reedsolo.RSCodec(32, nsize=255, c_exp=8, generator=2, fcr=1, prim=0x187)
+    
+    final_bytes = bytearray()
+    for off in range(0, len(deinterleaved), 255):
+        blk = deinterleaved[off:off+255]
+        try:
+            decoded = rs.decode(blk)[0]
+            final_bytes.extend(decoded)
+        except reedsolo.ReedSolomonError:
+            final_bytes.extend(blk[:223])
+            
+    # BER 2: Final
+    n_final = min(len(data_padded_ref), len(final_bytes))
+    ref_final = np.frombuffer(data_padded_ref[:n_final], dtype=np.uint8)
+    act_final = np.frombuffer(final_bytes[:n_final], dtype=np.uint8)
+    
+    diff_final = ref_final ^ act_final
+    bit_errors_final = 0
+    for b in diff_final:
+        bit_errors_final += bin(b).count('1')
+        
+    ber_final = bit_errors_final / (n_final * 8) if n_final > 0 else 0.0
+    
+    return ber_hard, ber_final
 
 
 def create_channel_figure(
@@ -528,6 +638,9 @@ def create_channel_figure(
     qpsk_q_channel: np.ndarray,
     iq: np.ndarray,
     noise_metrics: Optional[dict],
+    diff_encoded: bytes,
+    data_padded: bytes,
+    args: argparse.Namespace,
 ):
     """Figure 7: AWGN channel visualization."""
     fig = plt.figure(figsize=(16, 12))
@@ -552,10 +665,21 @@ def create_channel_figure(
                   'Q Channel (first 800 samples)')
 
     ax = fig.add_subplot(gs[0, 2])
-    ax.text(0.5, 0.5, format_noise_summary(noise_metrics),
+    ax.text(0.5, 0.75, format_noise_summary(noise_metrics, args),
             ha='center', va='center', transform=ax.transAxes,
-            fontsize=12, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7),
+            fontsize=11, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7),
             family='monospace')
+            
+    ber_hard, ber_final = calculate_ber_metrics(
+        qpsk_i_channel, qpsk_q_channel, diff_encoded, data_padded, args
+    )
+    
+    ber_text = f"BER (Hard Demod): {ber_hard:.2e}\nBER (Final):      {ber_final:.2e}"
+    ax.text(0.5, 0.25, ber_text,
+            ha='center', va='center', transform=ax.transAxes,
+            fontsize=11, bbox=dict(boxstyle='round', facecolor='lightcyan', alpha=0.7),
+            family='monospace')
+            
     ax.axis('off')
 
     ax = fig.add_subplot(gs[1, 0])
@@ -992,6 +1116,9 @@ def generate_visualizations(
             qpsk_q_channel,
             iq,
             noise_metrics,
+            diff_encoded,
+            data_padded,
+            args,
         )
         figures.append(fig_channel)
         figure_names.append(f"{stage_counter}_channel")
